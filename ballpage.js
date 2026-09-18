@@ -342,7 +342,10 @@
   function readMc(v) {
     var tm = window.TaskMascot;
     if (!tm || !tm.readConfig) {
-      return { on: false, char: MCHAR_DEF, size: MSIZE_DEF, reacts: true };
+      /* ★ v0.26.0：talk 跟 TaskMascot.readConfig 的默认口径逐字对齐（没存过 = 开）。
+         这条兜底只在 mascot.js 压根没加载时走，但口径少一个字段就是一次分叉 ——
+         而「两处默认值不一致」正是这个文件反复警告过的那类怪事。 */
+      return { on: false, char: MCHAR_DEF, size: MSIZE_DEF, reacts: true, talk: true };
     }
     return tm.readConfig(v);
   }
@@ -379,6 +382,13 @@
     /* 挂上/换脸之后把基线定下来。★ 这一步同时是「首屏不给表情」的实现：
        mood() 第一次调用只记档，所以页面刚打开时它不会对着你蔫一下。 */
     maybeMood();
+    /* ★★ v0.26.0：拨成静音时，正在说的那句要**跟着收**。
+       不收的话，用户拨完开关切回网页，会看见球还在那儿吐着一句话 ——
+       他的结论是「开关没生效」，而不是「这是拨之前那一句」。
+       ★ 走 hideSay 而不是只 remove 那个 class：hideSay 会顺手 ++saySeq，
+         把**在途的模型结果作废掉**。少了这一步，拨完开关之后半秒，
+         那句话会自己冒出来 —— 症状比不收还糟。 */
+    if (cfg.talk === false && wrap.classList.contains("say-on")) hideSay();
     if (!skipGeom) { clamp(); place(); }
   }
 
@@ -389,6 +399,7 @@
     /* ★ custom 也要带过去：预览壳上 ?mc=custom 时它才是那张图 */
     var cfg = { on: true, char: id || state.mc.char,
                 size: size || state.mc.size, reacts: state.mc.reacts,
+                talk: state.mc.talk,
                 custom: state.mc.custom };
     applyMc(cfg);
     return true;
@@ -410,8 +421,12 @@
        所以「先不挂、等它回来」不额外增加延迟。 */
     on: false,
     /* 吉祥物配置（v0.24.0）。★ 初始一律「关」——与 on 同理：宁可晚一拍，
-       也不能先按默认值画出来再改（那样会看见球「从小忽然变大」）。 */
-    mc: { on: false, char: MCHAR_DEF, size: MSIZE_DEF, reacts: true }
+       也不能先按默认值画出来再改（那样会看见球「从小忽然变大」）。
+       ★ talk 的初值跟 reacts 同档取 true（不是 false）：这两个都是**行为**
+         开关，而 on 那个 false 是「还不知道挂不挂」。区别在于会不会被误用 ——
+         talk:false 的初值会让「storage 还没回来的那几百毫秒里点球」变成
+         默认静音，而用户根本不知道自己在测一个中间态。 */
+    mc: { on: false, char: MCHAR_DEF, size: MSIZE_DEF, reacts: true, talk: true }
   };
 
   /* ================================================================ 数据 */
@@ -595,9 +610,18 @@
     armSayTimer();
   }
 
-  /* 用户点了它 → 说一句。 */
+  /* 用户点了它 → 说一句。
+     ★★ v0.26.0：这里是「说话」开关的**唯一**门控点（设置页球那段的
+        「点它的时候说一句」）。放在最前面而不是放在 showSay 里：
+        showSay 还要给 doAction 的回执用（「3 件已经拉回今天」），
+        把门控塞进 showSay 会连回执一起静音 —— 那是个更难查的 bug，
+        因为「点了按钮什么都没发生」看起来像按钮坏了。
+     ★ 只关说话，**不关表情**：戳一下它的反应（endDrag 里的 mc.boop）
+       走的是另一条路，跟这里无关。这正是老大拍板的那条 ——
+       「只关说话，表情留着」。 */
   function sayNow() {
     if (!state.connected || !window.Notify) return;
+    if (state.mc.talk === false) return;
     var N = window.Notify;
     var f = N.facts({ tasks: state.tasks });
     var me = ++saySeq;
@@ -978,6 +1002,12 @@
          就只能测到 storage，测不到 DOM —— 这条教训本项目写过）。 */
       applyMc: applyMc, readMc: readMc, previewMc: previewMc,
       getMc: function () { return mc; },
+      /* ★ v0.26.0：说话开关的判据必须落在**行为**上（气泡亮不亮），
+         而不是「配置里那个布尔是什么」。所以把 sayNow 也放出来 ——
+         隔着 storage 绕一圈只能测到配置，测不到「它到底开没开口」；
+         而 jsdom 里点球那条路要过 pointer 事件 + 位移阈值，
+         测起来一大半功夫花在造事件上，反而不稳。 */
+      sayNow: sayNow,
       ballSize: ballSize, needW: needW,
       MKEY: MKEY, MCHAR_DEF: MCHAR_DEF, MSIZE_DEF: MSIZE_DEF,
       BALL: BALL, PAD: PAD, GAP: GAP, INPUT_W: INPUT_W, NEED_W: NEED_W

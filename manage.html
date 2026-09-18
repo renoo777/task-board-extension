@@ -1027,6 +1027,29 @@ body{
         </div>
       </div>
 
+      <!-- 说话（v0.26.0）
+           ★★ 为什么单开一格、而且**故意不藏在「吉祥物」开关后面**：
+             这一格要回答的是「别让它动不动跟我说话」。而「说话」这件事
+             **不受吉祥物开关管** —— 普通圆球（没开吉祥物）点一下照样会说话。
+             藏进吉祥物那格的话就变成：「关掉吉祥物 → 开关跟着消失 → 声音还在」，
+             用户永远找不到关掉它的办法。这正是 Clippy 死刑判决书里那一条：
+             **用户找不到关掉它的办法**，比它烦人本身更致命。
+             （提方案时我说的是「跟吉祥物同一格」，落地时按这条改了 ——
+               一格 vs 一个开关，是两件事。）
+           ★ 它管的是**说不说**；AI 页那个「说一句话」管的是**那句话谁来写**。
+             两件事，文案都带「说」字，但一个管有无、一个管润色。
+             关掉这里 = 彻底闭嘴；关掉那里 = 还说，只是退回本地规则句。
+           ★ 存 `taskboard.mascot` 里的 talk 字段（跟 on/char/size/reacts 同一个对象）——
+             ballpage 和设置页共用 mascot.js 那份 readConfig，加在这里等于两个宿主
+             **同时**拿到，不可能出现「设置页关了、网页上还在说」。
+             代价是写入必须**整块合并**（见 manage.js 里 mcCfg 那段注释）。 -->
+      <div class="where">
+        <div class="wrow">
+          <span class="wtag">说话</span>
+          <label class="sw2"><input type="checkbox" id="talkOn"><span>点它的时候说一句</span></label>
+        </div>
+      </div>
+
       <!-- 主动提醒（v0.25.0）
            ★★ 又是单开一格，理由跟上面两格同源 —— 它管的是**系统通知**：
              不是桌面球（那格管窗口存不存在）、不是网页球（那格管注入）、
@@ -1150,7 +1173,6 @@ body{
           <span class="tip" role="tooltip">
             <b class="th">打开之后它做什么</b>
             <span class="tr"><em>认句子</em><span>你写的话它没看懂时补一手</span></span>
-            <span class="tr"><em>本周小结</em><span>给底栏那行加一句人话</span></span>
             <span class="tr"><em>不出手</em><span>认不出来就什么都不做，绝不猜</span></span>
             <span class="tr"><em>不替你做决定</em><span>不催办、不改写、不排程</span></span>
             <b class="th">它跟上面那个开关</b>
@@ -1179,16 +1201,16 @@ body{
               <span class="tr"><em>什么时候</em><span>你写出它没学过的说法，比如「下周三给张总回个话」</span></span>
               <span class="tr"><em>给什么</em><span>只是草稿 —— 回车照旧立刻建任务，几秒后它想明白了就地改好</span></span>
               <span class="tr"><em>反悔</em><span>会给你一个「按 AI 理解改的」撤销按钮</span></span>
-              <b class="th">本周小结</b>
-              <span class="tr"><em>落在哪</em><span>底栏「本周完成 N 件」后面加一句话</span></span>
-              <span class="tr"><em>边界</em><span>数字是算出来的，模型只负责措辞</span></span>
-              <span class="tr"><em>送出去</em><span>只有数字，不含任何任务标题</span></span>
             </span>
           </span>
+          <!-- ★★ v0.26.0：「本周小结」这一格删了，不要再加回来。
+               它管的 `scenes.weekly` 没了落点（底栏那段「本周完成 N 件 · 一句话」
+               被整段砍掉 —— 老大否它的原话是「不希望呈现出无关的乱七八糟的内容」）。
+               ★ 判据：**一个拨了没有任何反应的开关，比没有这个开关更糟**。
+                 删能力就要连着把开关一起删，别让它留在这儿当装饰。 -->
           <div class="bhd">用在哪儿</div>
           <div class="grid2">
             <label class="sw2"><input type="checkbox" id="aiParse"> 认句子</label>
-            <label class="sw2"><input type="checkbox" id="aiWeekly"> 本周小结</label>
             <label class="sw2"><input type="checkbox" id="aiSpeak"> 说一句话</label>
           </div>
         </div>
@@ -1330,7 +1352,7 @@ body{
              真正的版本号由 manage.js 从 manifest 读出来覆盖 ——
              写死在 HTML 里等于第二个版本号出处，manifest 一升版这里就开始说谎，
              而且没有任何症状。 -->
-        <div class="ab-ver"><span id="abVer">v0.25.0</span></div>
+        <div class="ab-ver"><span id="abVer">v0.26.0</span></div>
       </div>
     </section>
 

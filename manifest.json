@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "任务台",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0saH16Eay/HEYWaRzuuZ3DtE2zNvG0f4E/ndXVeO2lsEoB+aphBCgplNOLawLztZ4LiqylzJI2TaqQUw+BtBVrH75+NisFFMTkZfa1rlrKOIfLfbbBROrG54zs45voLZ7Qs+2yILBb0nq1HB3F1fmmtYAILHpdZ4Qu8N1Ve8hxJGUd+M+szGd6caru59yDApxAP+KJjKjkMF64ksl0w6hnEiFfpznncKO7a5Md1Ai2/LbHQDyze+uRKUrcfazvbsRM9IBr45GCjwG610Eil7VFKOEcZrLK5WcctMp1gZVsTgCze0iETrKEgjbcyfuygTujzFaMKLq4ef+D4UIK/kQwIDAQAB",
   "description": "点右上角图标即开的轻量任务台：今天聚焦、按项目组织、拖拽流转状态、任务可挂起，网页上常驻一颗悬浮球随手记，还能把任务台浮在桌面最上层。可镜像到飞书多维表格长期保存。",
   "icons": {

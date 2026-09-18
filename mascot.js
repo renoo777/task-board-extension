@@ -619,7 +619,18 @@
     return MOODS.busy;
   }
 
-  var DEFAULT = { on: true, char: "fox", size: SIZE.def, reacts: true };
+  /* ★★ v0.26.0：`talk` = 「点了它，它说不说话」。默认开，口径 `v.talk !== false`
+     （没存过 = 开），跟 on / reacts 逐字一致。
+     ★ 为什么它住在 mascot 这份配置里、而不是另开一个 key：
+       两个宿主都要看得见它 —— 网页球点一下要读（ballpage.js 的 sayNow），
+       设置页要写（manage.js 的 mcCfg）。readConfig 已经是这两边**唯一**一份
+       解析口径，加在这里等于零成本；另开一个 key 就要在 ballpage 的 storage
+       监听、manage 的启动读、export/import 清单里各加一处，而漏掉任何一处的
+       症状都是「设置页关掉了、网页上照旧在说」—— 那种 bug 只会在真机上露面。
+     ★ 它是**行为**字段（跟 reacts 同类），读它的地方只有网页球一处。
+       桌面球收到这个字段也不会说话：它压根没做「点球开口」那条路，
+       所以这个开关对桌面球是**无影响**的（不是坏了）。 */
+  var DEFAULT = { on: true, char: "fox", size: SIZE.def, reacts: true, talk: true };
 
   /* ★★ 配置只有这一份解析口径，两个宿主（网页球 / 设置页）都调它。
      为什么不各写一份：本项目已经栽过 —— 两处默认值不一致会造出
@@ -666,6 +677,13 @@
       char: char,
       size: clampSize(v.size),
       reacts: v.reacts !== false,
+      /* ★★ v0.26.0：说话开关（见 DEFAULT 上面那段）。判据必须写成
+         `v.talk !== false` —— 写成 `!!v.talk` 的话，**所有老用户升级后直接静音**
+         （他们没存过这个字段），而「升级完球突然不吭声了」是没人会往配置上想的现象。
+         ★ 它**故意不受 `on` 门控**：普通圆球（on:false）点一下照样会说话，
+           所以这个开关必须在 on 关着时也读得到、也拨得动 —— 否则就是
+           Clippy 判决书里那条「用户找不到关掉它的办法」。 */
+      talk: v.talk !== false,
       custom: custom
     };
   }

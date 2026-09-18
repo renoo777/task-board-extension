@@ -836,9 +836,12 @@ html.has-showpicker .cedit .datewrap input[type="date"]::-webkit-calendar-picker
   padding:0 14px 11px;font-size:11.5px;color:var(--ink3);
 }
 .foot .hold-stat{color:#8b7aa3}
-/* 「本周完成 N 件」（v0.9.0）—— 补上竞品调研六段结构里唯一空着的「回顾」段。
-   配色和「已挂起」同一档：都是次要信息，不该和左边的主计数抢注意力。 */
-.foot .week-stat{color:#6f7f8f}
+/* ★★ v0.26.0：这里原来有一条 `.foot .week-stat`（「本周完成 N 件」＋模型现写的那半句）。
+   整段删掉了，不要再加回来 —— 底栏是「一行说清现状」的地方，**回顾不是现状**。
+   它是怎么被否掉的：底栏可用宽度 532px，五段内容加起来 599px，超出的 67px
+   让每一段都被压着换行（「按日期排 / 列」「归档 / 2」「归档已完成」断成两截）。
+   ★ 判据不是「这段文字好不好」——是**宽度算不出来的那一行**：能落地的底栏
+     必须满足「所有段落加起来 < 528px」，否则一定会断行，断行就是那副乱样子。 */
 /* 同步状态：嵌在底栏里，不另起面板 —— 底栏本来就是「一行说清现状」的地方 */
 .foot .synced{
   display:inline-flex;align-items:center;gap:5px;color:var(--ink3);
@@ -1200,7 +1203,6 @@ html[data-theme="dark"] .bar .tsw .tsw-kn{transform:translateX(26px)}
   <div class="foot">
     <span id="stat"></span>
     <span class="hold-stat" id="holdStat" hidden></span>
-    <span class="week-stat" id="weekStat" hidden></span>
     <button class="synced" id="syncInd" hidden><span class="dot"></span><span id="syncTxt"></span></button>
     <div class="spacer"></div>
     <button class="link act" id="archBtn" hidden>归档</button>

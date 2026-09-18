@@ -552,51 +552,16 @@
   /* 撤销用的版本号。★ 存内存，不写进任务对象 —— 写进去的话，它会跟着导出 JSON
      和飞书同步一起走，在用户自己的数据里留一个只对我们有意义的字段。 */
   var aiRev = {};
-  var wkCache = null;      // { key: 周起点时间戳, line: "..." }
-  var AIWK = "taskboard.ai.weekly";
-
-  /* 本周小结。★ 缓存按**周起点**，一周只问一次 ——
-     因为提示词里明确要求「不要写出任何数字」，所以这句话和实时数字永远不冲突，
-     也就不需要「数字变了就重问」。一句话说一周，本来就是这个粒度。 */
-  function aiWeekly(wkFrom, done, hold){
-    var el = document.getElementById("weekStat");
-    if (!el || !done || typeof AI === "undefined") return;
-
-    var text = "本周完成 " + done + " 件";
-    if (wkCache && wkCache.key === wkFrom) {
-      if (wkCache.line) el.textContent = text + " · " + wkCache.line;
-      return;                                   // 已经问过这一周了
-    }
-
-    /* 上一周 / 今天：都是**算出来的**，不是让模型数的。 */
-    var prevFrom = wkFrom - 7 * 86400000;
-    var prev = 0, today = 0;
-    for (var i = 0; i < st.tasks.length; i++) {
-      var t = st.tasks[i];
-      if (t.status !== "done" || !t.doneAt) continue;
-      if (t.doneAt >= prevFrom && t.doneAt < wkFrom) prev++;
-      if (ymd(new Date(t.doneAt)) === todayStr()) today++;
-    }
-
-    /* 先读一次持久缓存（弹窗每次打开都是新页面，内存缓存等于没有）。 */
-    Store.get(AIWK).then(function (c) {
-      if (c && c.key === wkFrom) {
-        wkCache = { key: wkFrom, line: c.line || "" };
-        if (c.line) el.textContent = text + " · " + c.line;
-        return;
-      }
-      AI.weeklyLine({ done: done, prev: prev, today: today, hold: hold }).then(function (line) {
-        /* ★ 失败就是失败，不写缓存 —— 否则一次网络抖动会把这一周永久钉成「没有小结」。
-           写成 null 的哨兵值是很容易犯的错：它把「暂时不行」变成了「一直不行」。 */
-        if (!line) return;
-        wkCache = { key: wkFrom, line: line };
-        Store.set(wkCache, AIWK);
-        /* 期间可能又 render 过一次，重新取一次元素更稳。 */
-        var el2 = document.getElementById("weekStat");
-        if (el2 && !el2.hidden) el2.textContent = text + " · " + line;
-      });
-    });
-  }
+  /* ★★ v0.26.0：这里原来住着 `aiWeekly()`（本周小结）—— 连同它的 wkCache、AIWK
+     （`taskboard.ai.weekly` 缓存）、以及 ai.js 里的 `weeklyLine` 一起删干净了。
+     老大原话：「不希望呈现出无关的乱七八糟的内容」。
+     ★ 为什么整段删而不是留着不调用：底栏那段「本周完成 5 件·这周总算有进展，
+       上周还完全没动。」里，前半是算出来的、后半是**模型现写的** —— 而它写什么
+       完全不受控（那句「上周还完全没动」就是在替用户下判断）。
+       删掉之后 AI 设置页的「本周小结」开关也没了落点，所以那个开关跟着删，
+       别留一个拨了没反应的死开关。
+     ★ 顺带被删的还有 `scenes.weekly`：SCENES 是**配置读写的遍历表**，
+       从表里摘掉一项，老配置里那个字段会被 readCfg 自然丢弃，不用写迁移。 */
 
   /* 解析兜底。base 是正则的结果，只用来判断「哪个槽位还空着」。 */
   function aiFallback(id, raw, base){
@@ -873,28 +838,11 @@
     var hc = document.getElementById("hitCount");
     if (hc) hc.textContent = searching ? (hits ? "命中 " + hits + " 项" : "没有命中") : "";
 
-    /* ★ 「本周完成 N 件」（v0.9.0）—— 补上竞品调研里六段结构唯一空着的那段「回顾」，
-       对应的失效模式第 5 条是「系统悄悄失效，用户察觉不到」。
-       口径：本周一 00:00 起，按 doneAt 数；**已归档的也算**（归档只是收起来，活是真干完了），
-       横跨周界的那批也照实算，不做任何取整粉饰。
-       ⚠️ 只在有数的时候显示 —— 「本周完成 0 件」是一句泄气话，不如不说
-       （调研第一弃用原因就是「打开看到一片红就愧疚」，这类数字要么给人正反馈、要么闭嘴）。 */
-    var wkFrom = (function(){
-      var d = new Date();
-      d.setHours(0, 0, 0, 0);
-      d.setDate(d.getDate() - ((d.getDay() + 6) % 7));   // 周一为一周之始
-      return d.getTime();
-    })();
-    var wkDone = st.tasks.filter(function(t){
-      return t.status === "done" && t.doneAt && t.doneAt >= wkFrom;
-    }).length;
-    var wkEl = document.getElementById("weekStat");
-    wkEl.hidden = wkDone === 0;
-    wkEl.textContent = "本周完成 " + wkDone + " 件";
-    /* ★ v0.16.0：在这句话后面，可选地再挂一句由模型写的小结。
-       数字**永远**是上面这行算出来的，模型连看都没看过它要复述什么 ——
-       送过去的只有四个数，不含任何一条任务标题。 */
-    aiWeekly(wkFrom, wkDone, holds.length);
+    /* ★★ v0.26.0：「本周完成 N 件」整段删了（v0.9.0 加进来的那一段回顾）。
+       它是底栏超宽的元凶之一 —— 那句 276px 的「本周完成 5 件·这周总算有进展，
+       上周还完全没动。」直接吃掉了底栏 532px 里的一半多。
+       ★ 底栏从此只回答一个问题：**现在手头是什么状况**。
+         回顾、鼓励、替用户下判断的话，都不属于这里。 */
 
     /* 底栏：「未完成」不含挂起（挂起是停车场，不算手头的活），也不含已归档。 */
     var live = st.tasks.filter(function(t){ return !isArchived(t); });
@@ -908,9 +856,15 @@
         ? "还没有任务"
         : (n === 0 ? "今天清空了" : "今天 " + n + " 项");
     } else {
+      /* ★★ v0.26.0：去掉了尾巴上的「，按日期排列 / 按项目排列」。
+         那句话是**对当前视图的复述** —— 顶部那排标签自己就写着「按日期 / 按项目」，
+         用户在哪儿站着不需要底栏再告诉他一遍。它占着 75px，正是那 67px 超宽的大头，
+         而它提供的信息量是零。
+         ★ 判据：底栏每一段都必须能回答「现在手头什么样」。
+           「东西是按什么排的」不是现状，是设置。 */
       statEl.textContent = live.length === 0
         ? "还没有任务"
-        : "未完成 " + open + " 项，" + (st.view === "date" ? "按日期排列" : "按项目排列");
+        : "未完成 " + open + " 项";
     }
 
     var hs = document.getElementById("holdStat");

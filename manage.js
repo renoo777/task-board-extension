@@ -947,8 +947,10 @@ function aiPaint(cfg, avail){
      不留半个灰掉的壳子，也不留一行「已关闭」的说明。 */
   more.hidden = !cfg.on;
 
+  /* ★ v0.26.0：「本周小结」那一行删了（底栏那段回顾整段砍掉，scenes.weekly 一起摘）。
+     删开关时要**两处一起走**：这里回填、下面 change 绑定 —— 只删一处的话，
+     轻则留一个读不到元素的空 if（无害但误导），重则回填时读 undefined 抛错。 */
   if (aiEl("aiParse"))  aiEl("aiParse").checked  = cfg.scenes.parse === true;
-  if (aiEl("aiWeekly")) aiEl("aiWeekly").checked = cfg.scenes.weekly === true;
   if (aiEl("aiSpeak"))  aiEl("aiSpeak").checked  = cfg.scenes.speak === true;
 
   var isCloud = cfg.where === "cloud";
@@ -1038,12 +1040,12 @@ function aiBind(){
   if (aiEl("aiParse")) aiEl("aiParse").addEventListener("change", function(){
     AI.saveCfg({ scenes: { parse: this.checked } }).then(refresh);
   });
-  if (aiEl("aiWeekly")) aiEl("aiWeekly").addEventListener("change", function(){
-    AI.saveCfg({ scenes: { weekly: this.checked } }).then(refresh);
-  });
-  /* ★ v0.25.0：关掉它只是让「点球说的那句话」退回本地规则句（notify.js 的
-     localLine），**不是让球闭嘴** —— 这条要写在提示里，否则用户会以为
-     「关掉 = 它不说话了」，然后开着它却什么都没发生时会觉得是 bug。 */
+  /* ★ v0.25.0 / v0.26.0：这个开关管的是「那句话**谁来写**」，不是「它说不说」。
+     关掉它，球照样会说话 —— 只是退回 notify.js 的本地规则句（localLine）。
+     ★★ 「说不说」在 v0.26.0 有了自己的开关（球那段的 talk），跟这个是**两件事**：
+          · 球段的「点它的时候说一句」= 说 / 不说（说了就是本地句，零成本）
+          · 这里的「说一句话」        = 那句话要不要请模型再写一遍
+        两句文案故意都出现「说」字，但一个管有无、一个管谁来写。 */
   if (aiEl("aiSpeak")) aiEl("aiSpeak").addEventListener("change", function(){
     AI.saveCfg({ scenes: { speak: this.checked } }).then(refresh);
   });
@@ -1593,6 +1595,13 @@ function aiBind(){
       var mcFile = document.getElementById("mcFile");
       var mcUp = document.getElementById("mcUp");
       var mcCfg = TaskMascot.readConfig(r[4]);
+      /* ★★ v0.26.0：「说话」的复选框。它**不在这格 HTML 里**（它有自己的
+         .where，跟自己那一行的标签），但它写的是**同一份配置**（mcCfg.talk）——
+         所以它的读写必须并进这个块，复用这里的 mcCfg 和 saveMc()。
+         在外面另开一段、各自读一次 storage，就会出现「两个 mcCfg 各写各的」，
+         后写的那次把前一次静默抹掉 —— 而这类 bug 只在「先换脸、再拨说话」
+         这个操作顺序下复现，单测各测各的永远绿。 */
+      var talkBox = document.getElementById("talkOn");
       var MCBASE = "mascots";
       var mcNames = {};        /* id → 中文名（渲染网格时顺手记下，paint 要用） */
       /* 自定义那一组/那一格的显示名。★ 用**常量**而不是在三处各写一遍字面量：
@@ -1621,6 +1630,11 @@ function aiBind(){
 
       function paintMc(){
         mcBox.checked = mcCfg.on;
+        /* ★ v0.26.0：「说话」也归这张表 —— 它读的是同一个 mcCfg。
+           判据写成 `!== false` 而不是 `!!`：跟 readConfig 同一口径。
+           写 `!!mcCfg.talk` 的话，老配置读出来是 undefined → 开关显示成「关」，
+           而它的**实际行为是开** —— 开关和事实相反是最难信任的一种不一致。 */
+        if (talkBox) talkBox.checked = mcCfg.talk !== false;
         /* ★ v0.24.1：这里原来写状态字，现在只**清空**。
            #mcHint 从今往后只在一个场合出现：清单真的没读进来
            （那时网格是空的，必须说话）；平时它一个字都不该有。 */
@@ -1666,6 +1680,21 @@ function aiBind(){
         saveMc({ on: !!mcBox.checked },
                mcBox.checked ? "球会变成会转头的小家伙" : "已关掉：退回原来那颗圆球");
       });
+
+      /* ★★ v0.26.0：说话开关。**故意不受 mcOn 管** —— 吉祥物关着（普通圆球）
+         时这一格照样露着，因为「说不说话」跟「长什么样」是两件事：
+         普通圆球点一下**照样会说话**（ballpage 的 sayNow 不看 mc.on）。
+         跟着 mcOn 藏起来的话就是「关掉吉祥物 → 开关消失 → 声音还在」，
+         用户永远找不到关掉它的办法 —— Clippy 死刑判决书里那一条。
+         ★ 文案要能自证边界：说清关掉之后「表情还在」，否则用户会以为
+           连表情一起没了，为了保住表情而不敢关。 */
+      if (talkBox) {
+        talkBox.addEventListener("change", function(){
+          saveMc({ talk: !!talkBox.checked },
+                 talkBox.checked ? "点它会跟你说一句"
+                                 : "已关掉：它不再出声（表情还在）");
+        });
+      }
 
       if (mcSizeEl) {
         mcSizeEl.addEventListener("click", function(e){
