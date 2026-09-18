@@ -26,9 +26,19 @@
   <p>加 <code>?demo=1</code> 看示例数据；再加 <code>&amp;form=input</code> 直接看输入态，<code>&amp;side=left</code> 看吸附在左边那一侧。</p>
   <p>吉祥物（v0.24.0）默认就开着：<code>?mc=cat</code> 换角色、<code>&amp;mcs=96</code> 换尺寸、
      <code>&amp;nomc=1</code> 看原来那颗圆球。</p>
+  <p>点一下球（v0.25.0）：它会先说一句话 + 给一个能点的动作；任务清零/有逾期时表情跟着走
+     （这两件事的规则在 <code>notify.js</code>，所以它必须跟 <code>ballpage.js</code> 一起加载）。</p>
   <p>真实环境下它注入在每个 http/https 网页上，位置和收起状态存在 storage 里，所有网站共用。</p>
-  <!-- mascot.js 必须排在 ballpage.js 前面：后者启动时就要读 TaskMascot -->
+  <!-- mascot.js 必须排在 ballpage.js 前面：后者启动时就要读 TaskMascot
+       ★★ notify.js 也必须在这儿（v0.25.0）—— 第 1 级「表情」和第 2 级「点它说一句」
+          都走它的 `Notify.facts / localLine / actionOf / compose`。
+          漏了它，ballpage.js 里那几处 `!window.Notify` 的守卫会安静地早退：
+          球照样在、点下去照样有反应，**就是既不说话也不换表情** ——
+          而预览壳存在的意义恰恰是「不装扩展也能看它长什么样」。
+          （真机上这一条由 manifest 的 content_scripts 名单保证，
+            两边是同一个坑的两副面孔：**新文件没进那张被遍历的名单**。） -->
   <script src="mascot.js"></script>
+  <script src="notify.js"></script>
   <script src="ballpage.js"></script>
 </body>
 </html>

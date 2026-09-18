@@ -6,6 +6,11 @@
   var PREFKEY = "taskboard.prefs";   // 使用偏好（v0.9.1：自然语言输入开关）
   var WBKEY = "taskboard.webball";   // 网页悬浮球开关（v0.22.0）—— **故意不并进 PREFKEY**
   var MCKEY = "taskboard.mascot";    // 吉祥物配置（v0.24.0）—— 整块对象，同样不并进 PREFKEY
+  /* ★ 提醒配置（v0.25.0）。**不从字面量取，取 notify.js 里那个常量** ——
+     这个 key 已经有一个权威出处了（Notify.KEY，后台与网页球都读它），
+     在这儿再写一遍字符串，就是「球上显示开着、设置页显示关着」那类
+     没人会去查的不一致的起点。加载顺序保证 Notify 已经在了（见 manage.html）。 */
+  var NTKEY = (typeof Notify !== "undefined" && Notify.KEY) ? Notify.KEY : "taskboard.notify";
 
   /* 偏好读写的口径必须和弹窗那边**完全一致**（同一个 key、同一个默认值）：
      两处默认值不一样的话，只会出现「设置页显示开着、弹窗里其实没开」这种查半天的怪事。 */
@@ -944,6 +949,7 @@ function aiPaint(cfg, avail){
 
   if (aiEl("aiParse"))  aiEl("aiParse").checked  = cfg.scenes.parse === true;
   if (aiEl("aiWeekly")) aiEl("aiWeekly").checked = cfg.scenes.weekly === true;
+  if (aiEl("aiSpeak"))  aiEl("aiSpeak").checked  = cfg.scenes.speak === true;
 
   var isCloud = cfg.where === "cloud";
   if (aiEl("aiWhereLocal")) aiEl("aiWhereLocal").checked = !isCloud;
@@ -1034,6 +1040,12 @@ function aiBind(){
   });
   if (aiEl("aiWeekly")) aiEl("aiWeekly").addEventListener("change", function(){
     AI.saveCfg({ scenes: { weekly: this.checked } }).then(refresh);
+  });
+  /* ★ v0.25.0：关掉它只是让「点球说的那句话」退回本地规则句（notify.js 的
+     localLine），**不是让球闭嘴** —— 这条要写在提示里，否则用户会以为
+     「关掉 = 它不说话了」，然后开着它却什么都没发生时会觉得是 bug。 */
+  if (aiEl("aiSpeak")) aiEl("aiSpeak").addEventListener("change", function(){
+    AI.saveCfg({ scenes: { speak: this.checked } }).then(refresh);
   });
 
   [["aiWhereLocal","local"], ["aiWhereCloud","cloud"]].forEach(function (p) {
@@ -1462,7 +1474,8 @@ function aiBind(){
   }
 
   /* ---------- 启动 ---------- */
-  Promise.all([Store.get(PKEY), Store.get(), Store.get(PREFKEY), Store.get(WBKEY), Store.get(MCKEY)]).then(function(r){
+  Promise.all([Store.get(PKEY), Store.get(), Store.get(PREFKEY), Store.get(WBKEY), Store.get(MCKEY),
+               Store.get(NTKEY)]).then(function(r){
     var list = r[0], data = r[1];
     if (Array.isArray(list) && list.length) projects = list;
     if (data && Array.isArray(data.tasks)) {
@@ -1500,6 +1513,63 @@ function aiBind(){
           toast(on ? "网页上会显示悬浮球" : "已关掉：任何网页都不再出现悬浮球");
         });
       });
+    }
+
+    /* ---------- 主动提醒（v0.25.0）----------
+       ★★ 这个开关跟上面三个有一处**根本差别**：那三个问的是「要不要在屏幕上
+         多画点东西」，默认值都倾向开；这个问的是「要不要在你没看着它的时候
+         跳出来」。所以它**默认关，而且只有显式勾上才算开**（notify.js 的 readCfg）。
+         风险不对称，默认值就不该对称 —— 跟 AI 总开关默认关是同一条理由。
+       ★★ 写入必须是**完整对象**：Store.set 对这个 key 是整块覆盖，而
+         「上次什么时候发的」（lastAt）就存在同一个对象里 —— 只写 {on:true}
+         会把 lastAt 抹掉，症状是「关掉再打开，当天可能被提醒两次」，
+         而且只在那个操作顺序下复现。
+       ★★ 关掉时**不清 lastAt**：日限流要继续作数。清了的话，用户关一下再打开
+         就等于把当天的额度重置了 —— 他随手一拨，那天就多收一条。 */
+    var ntBox = document.getElementById("ntOn");
+    if (ntBox) {
+      var ntAct = document.getElementById("ntAct");
+      var ntHint = document.getElementById("ntHint");
+      var ntTest = document.getElementById("ntTest");
+      var ntCfg = (typeof Notify !== "undefined")
+        ? Notify.readCfg(r[5]) : { on: false, lastAt: 0 };
+
+      function ntWhen(ts){
+        var d = new Date(ts);
+        return (d.getMonth() + 1) + "月" + d.getDate() + "日 " +
+          String(d.getHours()).padStart(2, "0") + ":" +
+          String(d.getMinutes()).padStart(2, "0");
+      }
+      function ntPaint(){
+        ntBox.checked = !!ntCfg.on;
+        /* ★ 「试一条」跟着开关一起露头/收起：关着的时候摆一个按钮，
+           用户点它发出的通知会让他以为「我明明关了啊」。 */
+        if (ntAct) ntAct.hidden = !ntCfg.on;
+        if (ntHint) ntHint.textContent = ntCfg.lastAt ? ("上次提醒 " + ntWhen(ntCfg.lastAt)) : "";
+      }
+
+      ntBox.addEventListener("change", function(){
+        ntCfg.on = !!ntBox.checked;
+        Store.set(ntCfg, NTKEY).then(function(){
+          ntPaint();
+          toast(ntCfg.on ? "有任务过期、你又一天没来时，会提醒你一次"
+                         : "已关掉：不再主动提醒");
+        });
+      });
+
+      if (ntTest) ntTest.addEventListener("click", function(){
+        if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) {
+          toast("这条通道现在不可用");
+          return;
+        }
+        /* ★ 走后台的 dry 通道：手点的这一次**不记账** —— 否则用户试完就把
+           今天那条额度用掉了，真到该提醒的时候它不吭声，而他会以为功能是坏的。 */
+        chrome.runtime.sendMessage({ type: "notify-test" }, function (res){
+          toast((res && res.ok) ? ("这条就是它的样子：" + res.message) : "这条通道现在不可用");
+        });
+      });
+
+      ntPaint();
     }
 
     /* ---------- 吉祥物（v0.24.0）

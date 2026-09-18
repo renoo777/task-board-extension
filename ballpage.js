@@ -206,7 +206,57 @@
     ".wrap.mc-on .ring,.wrap.mc-on .badge{display:none}",
     "/* 「存下了」的绿勾也收掉 —— 吉祥物形态改用表情回报（见 flashOk） */",
     ".wrap.mc-on .ball.ok{background:none}",
-    ".wrap.mc-on .ball.ok::after{display:none}"
+    ".wrap.mc-on .ball.ok::after{display:none}",
+
+    /* ---------- 气泡：它开口说话的地方（v0.25.0）----------
+       ★★★ 三个定位决定，每一个都是为了不跟已有东西打架：
+
+       ① **absolute，不进 flex 流**。wrap 是 shrink-to-fit 的 fixed 盒子，
+          而 `place()` 拿 `ballSize()` 算贴边坐标 —— 气泡一旦成为 flex 子项，
+          它就把 wrap 撑宽，球的视觉位置跟着往内挪，于是「贴边的球不贴边了」，
+          而且只在气泡出现的那几秒里错（最难复现的那种）。
+          absolute 脱离布局流 = 对几何零影响。
+
+       ② **挂在球的正上方，不在球的侧边**。侧边已经被输入框占了
+          （点球同时会推输入框出来，见 endDrag）—— 气泡也放侧边的话，
+          两者会叠在一起，用户看到的是一团字压着一个输入框。
+
+       ③ **左右对齐靠 side-* 那一对选择器**。因为 DOM 顺序是 [球, 输入框]，
+          `side-right` 用 row-reverse 把球翻到最右 ⇒ wrap 的**右**边界就是球
+          的右边界，所以右对齐写 right:0 就行，不必去算式子。side-left 同理。 */
+    ".say{",
+    "  position:absolute;bottom:calc(100% + 6px);",
+    "  width:max-content;max-width:min(224px,calc(100vw - 32px));",
+    "  padding:7px 10px;border-radius:10px;",
+    "  background:#16171a;color:#fff;",
+    "  font-size:12.5px;line-height:1.45;text-align:left;",
+    "  box-shadow:0 6px 22px rgba(16,20,32,.26);",
+    "  opacity:0;transform:translateY(4px);pointer-events:none;",
+    "  transition:opacity .16s ease,transform .16s ease;",
+    "}",
+    ".wrap.side-right .say{right:0}",
+    ".wrap.side-left .say{left:0}",
+    ".wrap.say-on .say{opacity:1;transform:none;pointer-events:auto}",
+    /* 动作按钮：**只在有逾期时才有**（见 Notify.actionOf）——
+       没有动作就不画按钮，而不是画一个点了没事干的按钮 */
+    ".saydo{",
+    "  display:block;margin:6px 0 0;padding:4px 9px;",
+    "  font:inherit;font-size:12px;font-weight:600;",
+    "  color:#16171a;background:#fff;border:0;border-radius:7px;",
+    "  cursor:pointer;",
+    "}",
+    ".saydo:hover{background:#e8eaef}",
+    /* ★ 这一条不是冗余：.saydo 上面写了 display:block，而 [hidden] 的默认
+       display:none 是**被作者样式盖掉**的 —— 少了它，「没有动作」时按钮
+       照样显示（只是没字），气泡上会多出一个空白的白框。 */
+    ".saydo[hidden]{display:none}",
+
+    /* ★ 关掉动画偏好：气泡不做位移淡入（只留可点性，不留动效）。
+       与 mascot.js 里 reduced 那条同一个意图 —— 转场可以是零成本的，
+       但不该是「用户明确说过不要动」的那种。 */
+    "@media (prefers-reduced-motion: reduce){",
+    "  .say{transform:none;transition:none}",
+    "}"
   ].join("\n");
 
   /* ================================================================ 骨架 */
@@ -235,6 +285,13 @@
         '<span class="ring"></span><span class="badge" id="badge">–</span>' +
       '</button>' +
       '<input id="edit" type="text" placeholder="记一笔，回车新建…" autocomplete="off">' +
+      /* ★ v0.25.0 气泡。aria-live="polite" 不是为了好看 —— 它是「这个元素
+         会在你不操作的时候自己变」的标准声明方式，读屏软件会念出来。
+         一个会自己开口的浮层如果不声明，对读屏用户就是「页面莫名其妙响了一下」。 */
+      '<div class="say" id="say" role="status" aria-live="polite">' +
+        '<span id="sayText"></span>' +
+        '<button class="saydo" id="sayDo" type="button" hidden></button>' +
+      '</div>' +
     '</div>';
 
   root.innerHTML = "<style></style>" + MARKUP;
@@ -246,6 +303,7 @@
 
   var $ = function (id) { return root.getElementById(id); };
   var wrap = $("wrap"), ball = $("ball");
+  var sayBox = $("say"), sayText = $("sayText"), sayDo = $("sayDo");
 
   /* ================================================================ 吉祥物（v0.24.0）
      机制全部在 mascot.js（零依赖原生实现，跟桌面球共用同一份代码）。
@@ -318,6 +376,9 @@
       mc.unmount();
     }
     wrap.classList.toggle("mc-on", on && !!mc);
+    /* 挂上/换脸之后把基线定下来。★ 这一步同时是「首屏不给表情」的实现：
+       mood() 第一次调用只记档，所以页面刚打开时它不会对着你蔫一下。 */
+    maybeMood();
     if (!skipGeom) { clamp(); place(); }
   }
 
@@ -482,6 +543,113 @@
     }
   }
 
+  /* ================================================================ 它开口说话（v0.25.0）
+
+     ★★ 这里只做**界面**（什么时候把气泡亮出来、点亮之后干什么），
+        「说什么」和「什么时候允许主动说」全在 notify.js 里，一句话都不在这儿拼。
+        原因：桌面球那边也要说同一句话，两个宿主各拼一版文案，迟早会
+        「网页上说得对、桌面上说得怪」，而两边单测各测各的、全绿。
+
+     ★★ 这个球**不会主动开口**。它只在两种情况下说话，两种都由用户发起：
+         ① 你点了它（下面 endDrag 的点击分支）；
+         ② 你点了气泡上那个动作按钮之后（回你一句「做完了」）。
+         —— 「主动提醒」是这个功能的第 3 级，走的是**系统通知**，
+            不在球上：桌面球静息只有几十像素，网页球在别人家的页面上，
+            两者都不是一个适合「突然弹一句话出来」的位置。 */
+  var sayTimer = null;
+  var saySeq = 0;          /* ★ 序号：晚了回来的模型结果不许覆盖新的一句话 */
+  var sayAct = null;       /* 当前气泡上挂着的动作（null = 这条没有动作） */
+  var SAY_MS = 7000;       /* 只报个状态：看一眼就够 */
+  var SAY_ACT_MS = 12000;  /* 带动作：要留出「看懂 → 移鼠标 → 点」的时间。
+                              ★ 比上面长一倍是有意的 —— 一条来不及点的按钮
+                                等于没有按钮，而用户会把「点不到」记成「这球没用」。 */
+
+  function armSayTimer() {
+    if (sayTimer) clearTimeout(sayTimer);
+    sayTimer = setTimeout(hideSay, sayAct ? SAY_ACT_MS : SAY_MS);
+  }
+
+  function hideSay() {
+    if (sayTimer) { clearTimeout(sayTimer); sayTimer = 0; }
+    /* ★ 作废在途的模型结果：不 ++ 的话，收起之后回来的那句话会把气泡
+       重新点亮（用户已经把目光移走了，它又冒出来一次）。 */
+    saySeq++;
+    sayAct = null;
+    wrap.classList.remove("say-on");
+    sayText.textContent = "";
+    sayDo.hidden = true;
+    sayDo.textContent = "";
+  }
+
+  function showSay(text, action) {
+    sayAct = action || null;
+    sayText.textContent = (text == null) ? "" : String(text);
+    if (sayAct) {
+      sayDo.textContent = sayAct.label || "处理一下";
+      sayDo.hidden = false;
+    } else {
+      sayDo.textContent = "";
+      sayDo.hidden = true;
+    }
+    wrap.classList.add("say-on");
+    armSayTimer();
+  }
+
+  /* 用户点了它 → 说一句。 */
+  function sayNow() {
+    if (!state.connected || !window.Notify) return;
+    var N = window.Notify;
+    var f = N.facts({ tasks: state.tasks });
+    var me = ++saySeq;
+    var act = N.actionOf(f);
+    /* ★★ 先本地句、再润色。反过来（等模型回来才显示）的症状是
+       「用户点下去之后十几秒什么都没有」—— 模型超时上限就是 15 秒，
+       而这里又不是一个「等得起」的位置。与「记一笔」那条路同一个套路：
+       立刻给出能用的结果，异步把更聪明的那一版补上。 */
+    showSay(N.localLine(f), act);
+    N.compose(f, window.AI).then(function (r) {
+      if (me !== saySeq || !r || !r.text) return;      /* 已经翻篇了就别改口 */
+      /* ★ 一样就别重写：无意义的赋值会打断那段淡入过渡，看起来像闪一下。
+         没配模型时 compose 立刻返回本地句，正好走这条早退。 */
+      if (r.text !== sayText.textContent) showSay(r.text, r.action);
+    });
+  }
+
+  /* 气泡上那个按钮：**替用户动手**，不是再催他一句。
+     ★ 这是整个功能里唯一「有用的」那一块 —— 一个能替你动手的提醒，
+       比一个会说话的提醒值十倍（见 notify.js 抬头）。 */
+  function doAction() {
+    if (!sayAct || sayAct.kind !== "today" || !HAS_CHROME) return;
+    var t = new Date();
+    var today = t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") +
+                "-" + String(t.getDate());
+    chrome.storage.local.get([KEY], function (o) {
+      var data = (o && o[KEY]) ? o[KEY] : null;
+      if (!data || !Array.isArray(data.tasks)) return;
+      /* ★ 改哪些任务由 notify.js 的 applyToday() 说了算 ——
+         桌面通知上那个按钮改的是同一件事，两处各写一份判断，
+         迟早「网页上点改了 3 条、通知里点改了 4 条」。 */
+      var n = window.Notify.applyToday(data.tasks, today);
+      if (!n) return;
+      save(data);
+      /* ★ 做完必须回一句「做完了」，不能默默消失：
+         用户点了按钮之后要看见「它确实替我动了」，否则下次他就不点了。
+         （表情反馈不在这里给 —— 上面的 save() 会推 storage.onChanged，
+            render() → maybeMood() 会因为「逾期归零」自然给一个开心的表情。） */
+      showSay(n + " 件已经拉回今天", null);
+    });
+  }
+
+  /* 状态 → 表情。★ 去重（跨档才给）在 mascot.js 的 mood() 里，
+     这里只负责把事实算出来喂给它 —— 两个宿主都别自己记 lastMood。
+     ★★ `state.connected` 是这里唯一能区分「清零了」和「还没读到」的东西：
+        没读到的时候 tasks 也是空数组，facts() 会给出 {over:0, open:0}，
+        那跟真的全清一模一样。不挡的话，球会对着一份还没读到的数据显示成开心。 */
+  function maybeMood() {
+    if (!state.connected || !mc || !state.mc.on || !window.Notify) return;
+    mc.mood(window.Notify.facts({ tasks: state.tasks }));
+  }
+
   /* ================================================================ 渲染 */
 
   function render() {
@@ -491,6 +659,10 @@
       ? (openCount() > 99 ? "99+" : String(openCount())) : "–";
     $("edit").placeholder = state.connected
       ? "记一笔，回车新建…" : "还没读到浏览器里的数据";
+    /* ★ 心情外显挂在这里，因为 render() 是**所有**「数据变了」的汇合点
+       （首次 load / storage.onChanged / 5 秒兜底）。放在调用方要写三遍，
+       漏掉兜底那条的症状是「跨档了但它没反应」，而且只在漏事件时出现。 */
+    maybeMood();
   }
 
   /* ================================================================ 拖动
@@ -514,6 +686,7 @@
       drag.moved = true;
       ball.classList.add("drag");
       setForm("idle");                 /* 拖的时候把输入框收掉，不然手感很乱 */
+      hideSay();                       /* 一句话钉在拖动路径上也一样乱 */
       state.lockUntil = 0;
     }
     state.x = drag.ox + dx;
@@ -541,6 +714,11 @@
          ★ 为什么不把「记一笔」挪到双击或别的键上：那是拿**功能**换**趣味**，
            这笔买卖不划算 —— 顺手记一笔是这个球存在的理由。 */
       if (mc && state.mc.on) mc.boop();
+      /* ★ v0.25.0：点了它就说话（第 2 级「应答」）。
+         ★ 只挂在这一条路上 —— 这里**必定是用户点的**（位移没超过 4px 才算点，
+           见上面 drag 的阈值）。所以「球开口」这件事天然满足那条最硬的产品约束：
+           提醒必须是用户动作的回声，不能是它自己的主意。 */
+      sayNow();
       setForm(state.form === "input" ? "idle" : "input");
     }
   }
@@ -553,8 +731,31 @@
      事件绑定跟着一起走 —— 留着的唯一后果是 `$("gear")` 返回 null、
      整段脚本在控制台抛 TypeError（球直接不出来）。 */
 
+  /* 气泡上的动作按钮。★ stopPropagation 不是防冒泡到页面（shadow 边界已经挡了），
+     是防它冒到**我们自己的** pointerdown 那条捕获监听上 —— 那条会顺手续掉输入框，
+     而「既要执行动作、又顺手打乱另一个控件」是最典型的复合 bug。 */
+  sayDo.addEventListener("click", function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    doAction();
+  });
+
+  /* ★ 鼠标一挪到气泡上就停掉倒计时。没有这两句，那 SAY_MS / SAY_ACT_MS
+     就只是两个好看的数字 —— 用户正要点击时它会在他手指底下消失，
+     而他只会记住「这东西点不到」。 */
+  sayBox.addEventListener("mouseenter", function () {
+    if (sayTimer) { clearTimeout(sayTimer); sayTimer = 0; }
+  });
+  sayBox.addEventListener("mouseleave", function () {
+    if (wrap.classList.contains("say-on")) armSayTimer();
+  });
+
   document.addEventListener("keydown", function (e) {
     if (e.key !== "Escape") return;
+    /* 气泡比输入框「更新」：先收它。反过来的话，用户按 Esc 想关掉那句
+       挡在眼前的话，结果是把输入框关了 —— 而输入框本来就没开着，什么都
+       没发生，看起来像 Esc 失灵。 */
+    if (wrap.classList.contains("say-on")) { hideSay(); return; }
     if (state.form === "input") setForm("idle");
   }, true);
 
@@ -621,6 +822,9 @@
     createTask(text);
     flashOk();
     setForm("idle");
+    /* ★ 记完一笔那句话就过期了（「还剩 3 件」在刚才那一笔之后已经是 4 件）。
+       留着它 = 界面上挂着一句已知是错的话。 */
+    hideSay();
   }
 
   $("edit").addEventListener("input", function () { state.draft = $("edit").value; });

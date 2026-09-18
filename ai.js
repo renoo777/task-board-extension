@@ -42,7 +42,10 @@
      设置页里给开关是为了能关掉，这里给它默认关是为了让人先想一次。 */
   var DEFAULTS = {
     on: false,
-    scenes: { parse: true, weekly: true, split: false },
+    /* ★ speak（v0.25.0）默认**跟 weekly 同级为开** —— 它俩是同一类东西：
+       数字由代码算、措辞由模型写，模型挂了也不影响功能（调用方有本地兜底句）。
+       而 split 是「替你改数据」，parse 是「替你填空」，那两个猜错的代价更贵。 */
+    scenes: { parse: true, weekly: true, split: false, speak: true },
     where: "local",
     cloud: { base: "", model: "", key: "" },
     /* ★ v0.18.0：云端从「一个」变成「一串」。
@@ -53,7 +56,17 @@
     activeId: ""
   };
 
-  var SCENES = ["parse", "weekly", "split"];
+  /* ★★★ v0.25.0：`speak` **必须**登记进 SCENES —— 这不是「顺手写的清单」，
+     它是**配置读写的遍历表**：readCfg() 照着它逐项建 c.scenes、writeCfg() 照着它
+     逐项收 patch。漏登记一个的后果分两层，两层都不报错：
+       ① canUse("speak") 里 `cfg.scenes["speak"] !== true`（undefined ≠ true）→
+          模型润色这条路**永远走不到**，用户只看到本地句，而本地句本来就好看，
+          所以没人会发现「模型那一半从来没生效过」；
+       ② 设置页那个 aiSpeak 复选框**回写不进去** —— 勾上、保存、再打开，它又变回默认。
+          一个「点了没用」的开关比没有这个开关更糟。
+     ★ 这和 v0.24.0 那次「加了 mascot.js 没翻 _pack.py」是同一类：新东西进了
+       DEFAULTS（看起来齐了），却没进那张被 for 循环遍历的名单。 */
+  var SCENES = ["parse", "weekly", "split", "speak"];
   var WHERES = ["local", "cloud"];
   /* 系统提示词。★ 抽成常量是因为「自定义 Prompt」要**附加**在它后面 ——
      两处各写一遍的话，改一处不改另一处，用户填的 Prompt 会悄悄失效。 */
@@ -601,6 +614,61 @@
     });
   }
 
+  /* ============================================================
+     场景 4：把「今天的状况」说成一句话（v0.25.0）
+
+     ★ 这条路上**可以把任务标题送出去**，是这一版对「数据最小化」的
+       一次**有意例外**，理由必须写清楚（不然下一个人会以为是漏了）：
+
+         · 调用方只有一处：**用户点了吉祥物**。他主动问「我今天还有什么」，
+           回一句「还剩 3 件」是废话 —— 球上就写着 3，界面上也有。
+           有价值的是**说出是哪几件**。这是用户发起的询问，不是后台窥探。
+         · 相对的，**主动提醒（系统通知）那条路不调模型**，
+           它走 `Notify.localLine()` 的规则句。两个原因，都不是图省事：
+             ① service worker 里没有本机模型（`window.LanguageModel` 不存在），
+                在 SW 里调等于把「通知文案」绑死在云端通道上；
+             ② 通知是**在你没看着它的时候**弹出来的，措辞必须稳定 ——
+                用户对系统通知的容忍度远低于对界面上的一句话。
+         · 所以例外被限定在「用户主动发起的询问」这一条路上，写在代码里，
+           不是靠自觉。
+
+     ★ 与 weeklyLine 同构：数字由代码算、措辞由模型写；模型返回空 / 失败 /
+       超时 / 格式非法 → 调用方退回 `Notify.localLine()`（那条路不依赖模型）。
+     ============================================================ */
+  function speakLine(f) {
+    f = (f && typeof f === "object") ? f : {};
+    var over = Math.max(0, parseInt(f.over, 10) || 0);
+    var open = Math.max(0, parseInt(f.open, 10) || 0);
+    var today = Math.max(0, parseInt(f.today, 10) || 0);
+    var done = Math.max(0, parseInt(f.done, 10) || 0);
+    /* ★ 标题要在这里再洗一遍（压换行、截断、去空），不能信调用方 ——
+       它们最终会拼进提示词，一个换行就能把「情况：…」那一段拆成两句，
+       模型会把第二句当成新的指令。 */
+    var titles = (Array.isArray(f.titles) ? f.titles : []).slice(0, 3).map(function (s) {
+      return String(s == null ? "" : s).replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim().slice(0, 20);
+    }).filter(function (s) { return !!s; });
+
+    var prompt =
+      "用一个简短的中文句子回答「我今天还有什么没做」。不超过 22 个字。\n" +
+      "情况：过期 " + over + " 件，今天到期 " + today + " 件，" +
+      "没完成共 " + open + " 件，今天已完成 " + done + " 件。\n" +
+      (titles.length ? ("过期的那几件是：" + titles.join("、") + "。\n") : "") +
+      "要求：像同事随口告诉你一句，不要「加油」「别放弃」这类打气话，" +
+      "不要 emoji，句末不要感叹号，最多只提两件事。" +
+      "只输出这一句本身。";
+
+    return run(prompt, { scene: "speak", maxIn: 400, timeout: 15000 }).then(function (t) {
+      if (!t) return null;
+      var line = stripFence(t).replace(/\s+/g, " ").trim();
+      /* ★ 两重夹取（与 weeklyLine 一致）：长度 + 形状。气泡只有两行，
+         而模型爱写长句、爱给整句裹引号、爱顺手换行。 */
+      line = line.replace(/^["'「『]|["'」』]$/g, "").trim();
+      if (!line || line.length > 30) return null;
+      if (line.indexOf("\n") >= 0) return null;
+      return line;
+    });
+  }
+
   /* 内置模型可用吗？设置页用它决定那块显示什么。 */
   function status() {
     return getCfg().then(function (cfg) {
@@ -624,6 +692,7 @@
     run: run,
     suggestTask: suggestTask,
     weeklyLine: weeklyLine,
+    speakLine: speakLine,
     status: status
   };
 })(typeof window !== "undefined" ? window : this);

@@ -1026,6 +1026,27 @@ body{
           <input type="file" id="mcFile" accept="image/*" hidden>
         </div>
       </div>
+
+      <!-- 主动提醒（v0.25.0）
+           ★★ 又是单开一格，理由跟上面两格同源 —— 它管的是**系统通知**：
+             不是桌面球（那格管窗口存不存在）、不是网页球（那格管注入）、
+             也不是吉祥物（那格管形态）。嵌进吉祥物里的话，用户会以为
+             「不开吉祥物就不会被提醒」，而实际上两者完全独立（普通圆球也提醒）。
+           ★ 开关存独立 key（taskboard.notify），且**默认关** ——
+             打扰必须先被同意。这条不是谨慎，是 Clippy 的死刑判决书里
+             明写着的一条：「用户找不到关掉它的办法」。
+           ★ 这一格的文案要自己回答两个问题：**什么时候会说、怎么才能让它闭嘴**。
+             说不清这两条的功能，用户只会把开关永久关掉。 -->
+      <div class="where">
+        <div class="wrow">
+          <span class="wtag">提醒</span>
+          <label class="sw2"><input type="checkbox" id="ntOn"><span>有任务过期时提醒我一下</span></label>
+        </div>
+        <div class="row wrap wact" id="ntAct" hidden>
+          <button class="btn sm" id="ntTest">现在试一条</button>
+          <span class="sub" id="ntHint"></span>
+        </div>
+      </div>
     </section>
 
     <!-- 数据
@@ -1168,6 +1189,7 @@ body{
           <div class="grid2">
             <label class="sw2"><input type="checkbox" id="aiParse"> 认句子</label>
             <label class="sw2"><input type="checkbox" id="aiWeekly"> 本周小结</label>
+            <label class="sw2"><input type="checkbox" id="aiSpeak"> 说一句话</label>
           </div>
         </div>
 
@@ -1308,7 +1330,7 @@ body{
              真正的版本号由 manage.js 从 manifest 读出来覆盖 ——
              写死在 HTML 里等于第二个版本号出处，manifest 一升版这里就开始说谎，
              而且没有任何症状。 -->
-        <div class="ab-ver"><span id="abVer">v0.24.0</span></div>
+        <div class="ab-ver"><span id="abVer">v0.25.0</span></div>
       </div>
     </section>
 
@@ -1379,6 +1401,10 @@ body{
 <!-- 吉祥物核心（v0.24.0）：与网页球共用同一份实现 —— 设置页要用它的
      readConfig / clampSize，那是配置口径的唯一出处，不能在这儿再抄一遍。 -->
 <script src="mascot.js"></script>
+<!-- ★ v0.25.0：球开口说话的规则（说什么 / 什么时候允许主动说）。
+     设置页要用它的 KEY（那份配置存在哪个 key 下）—— 两边各写一遍字符串
+     就是「球上显示开着、设置页显示关着」那类不一致的温床。 -->
+<script src="notify.js"></script>
 <!-- ★ v0.24.0：角色清单。**必须排在 manage.js 之前** —— 后者启动时直接读
      window.MASCOT_INDEX（同步，不 fetch：Chrome 对 file:// 下的 fetch 是直接拒绝的，
      而真机验收与本地预览都在 file:// 下看这一页）。 -->

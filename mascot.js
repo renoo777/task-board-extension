@@ -233,6 +233,9 @@
     var boops = { count: 0, at: 0 };
     var reaction = null;
     var direction = "center";
+    /* ★★ undefined = 「还没定过基线」，与 null = 「档位就是常态」是两件事。
+       这两个值混用会让「首屏就蔫一下」和「常态不吭声」互相打架（见 mood()）。 */
+    var lastMood;
     var shell = null, squash = null, layerDir = null, layerRea = null;
     var mounted = false;
     var destroyed = false;
@@ -527,6 +530,25 @@
 
       setReduced: function (v) { reduced = !!v; return api; },
 
+      /* 把「今天什么状况」交给它 —— **跨档才给一次表情**，同档不动。
+         ★★ 去重必须在这一层，不能交给各个宿主：这份代码有两个宿主
+            （网页球 / 桌面球）＋ 设置页的预览，三处各写一遍「记一个 lastMood」
+            是最典型的「两边默认值不一致」温床。放在这里只有一处。
+         ★★ 第一次调用**只定基线、不给表情**：页面刚打开时它不知道自己是刚醒
+            还是刚发现你今天有逾期 —— 把「刚挂上」演成「有变化」，
+            结果就是用户每换一个网页都看见它蔫一下。那是骚扰，不是外显。
+         ★ 传进来的必须是 { over, open } 两个**已算好的数**（见 moodOf 抬头）。 */
+      mood: function (stats, ms) {
+        var m = moodOf(stats);
+        if (m === lastMood) return api;
+        var first = (lastMood === undefined);
+        lastMood = m;
+        /* 常态（空串）不下发 —— setReaction("") 会去 indexOf 一个空名字，
+           而 REACTIONS.indexOf("") === -1，那会把 background-position 写坏。 */
+        if (!first && m) api.react(m, ms || MOOD_MS);
+        return api;
+      },
+
       destroy: function () {
         clearTimers();
         api.unmount();
@@ -551,6 +573,50 @@
         thumb: base + "/thumb/" + c.id + ".webp"
       };
     });
+  }
+
+  /* ============================================================ 心情映射（v0.25.0）
+
+     「让它知道我今天的状况」—— 但**只做外显，不做提醒**。
+
+     ★★ 为什么是「三档」而不是一条连续的曲线：这套素材只有九张表情，而且
+        表情层和朝向层**互斥**（两张都是 3×3 雪碧，同一时刻只显示一层）。
+        所以「常驻蔫着」的代价是**它从此不转头了** —— 那是用一个更贵的东西
+        （跟着你鼠标看的活物感）换一个更便宜的东西（一张不高兴的脸）。
+        → 结论：心情只以**短表情**的形式出现，给完就把脸还给它自己。
+
+     ★★ 为什么触发条件是「跨档」而不是「每次数据变化」：球挂在每一个网页上，
+        每存一次任务、每同步一次飞书都会推一次新数据。照单全收的话，
+        用户拖一下球、改一个字都换来一次表情 —— 那是噪声，不是反馈。
+        只有**档位真的变了**才给一次，那才叫「它看见了」。
+
+     ★★ 判据只吃**已经算好的两个数**（over / open），不吃任务数组：
+        任务长什么样是宿主的事，这里只负责「两个数字 → 一张脸」。
+        这样它是个纯函数，jsdom 里能直接验，不用造一整个 storage。 */
+  var MOODS = { over: "sleepy", clear: "delighted", busy: "" };
+  /* 心情表情停留多久。★ 比「戳一下」的 560ms 长得多：那个是你自己戳的，
+     你知道发生了什么；这个是它自己变的，用户得先**注意到**才谈得上理解。
+     2 秒是「转头看一眼能看清」的最短时长，再长就开始挡着界面了。 */
+  var MOOD_MS = 2000;
+  function moodOf(s) {
+    /* ★★ 「没给我信息」和「信息是零」必须分开 —— 这是两个不同的世界：
+         · 没给（undefined / null / 不是对象）→ 返回空串 = **不给表情**；
+         · 给了 `{over:0, open:0}` → 是「它确实知道你清零了」→ 庆祝。
+       混成一个的后果：调用方漏传一次参数，球就对着一份**还没读到的数据**
+       欢呼一下（「今天清空了」），而屏幕上的角标明明是「–」。
+       这类「把不知道当成好结果」的错在界面上看起来完全正常，只能靠这里挡住。 */
+    if (!s || typeof s !== "object") return MOODS.busy;
+    var over = Math.max(0, parseInt(s.over, 10) || 0);
+    var open = Math.max(0, parseInt(s.open, 10) || 0);
+    /* 优先级：逾期 > 清零 > 常态。
+       ★ 「有逾期」必须压过「今天清零」：旧账没还清、今天却清空了，
+         这时候庆祝是错的判断 —— 用户会立刻觉得这东西不懂事。 */
+    if (over > 0) return MOODS.over;
+    if (open === 0) return MOODS.clear;
+    /* ★ 常态返回空串 = **不给表情**（交回调「什么都不做」）。
+       给一个 blink 常驻听起来更"活"，代价是表情层一直占着，
+       它就不转头了 —— 而转头才是它每分钟都在做的事。 */
+    return MOODS.busy;
   }
 
   var DEFAULT = { on: true, char: "fox", size: SIZE.def, reacts: true };
@@ -620,6 +686,9 @@
     drawAtlas: drawAtlas,
     atlasOverflow: atlasOverflow,
     readCustom: readCustom,
+    moodOf: moodOf,
+    MOODS: MOODS,
+    MOOD_MS: MOOD_MS,
     /* 给测试用的纯函数 —— jsdom 里量不到 rect，但这两个能覆盖住核心映射 */
     _cell: cell,
     _dirOf: dirOf,
