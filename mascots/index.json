@@ -1,0 +1,292 @@
+[
+ {
+  "id": "afro",
+  "name": "爆炸头",
+  "group": "人物"
+ },
+ {
+  "id": "astronaut",
+  "name": "宇航员",
+  "group": "人物"
+ },
+ {
+  "id": "bald",
+  "name": "光头",
+  "group": "人物"
+ },
+ {
+  "id": "ballerina",
+  "name": "芭蕾",
+  "group": "人物"
+ },
+ {
+  "id": "bear",
+  "name": "熊",
+  "group": "动物"
+ },
+ {
+  "id": "beard",
+  "name": "胡子大叔",
+  "group": "人物"
+ },
+ {
+  "id": "builder",
+  "name": "建筑工",
+  "group": "人物"
+ },
+ {
+  "id": "bunny",
+  "name": "兔子",
+  "group": "动物"
+ },
+ {
+  "id": "cap",
+  "name": "棒球帽",
+  "group": "人物"
+ },
+ {
+  "id": "cat",
+  "name": "猫",
+  "group": "动物"
+ },
+ {
+  "id": "chef",
+  "name": "厨师",
+  "group": "人物"
+ },
+ {
+  "id": "clockwork",
+  "name": "发条人",
+  "group": "机器与物件"
+ },
+ {
+  "id": "crt",
+  "name": "老电视",
+  "group": "机器与物件"
+ },
+ {
+  "id": "cube",
+  "name": "方块",
+  "group": "机器与物件"
+ },
+ {
+  "id": "deer",
+  "name": "小鹿",
+  "group": "动物"
+ },
+ {
+  "id": "dino",
+  "name": "恐龙",
+  "group": "动物"
+ },
+ {
+  "id": "drone",
+  "name": "无人机",
+  "group": "机器与物件"
+ },
+ {
+  "id": "fox",
+  "name": "狐狸",
+  "group": "动物"
+ },
+ {
+  "id": "fox-ink",
+  "name": "墨狐",
+  "group": "动物"
+ },
+ {
+  "id": "fox-paper",
+  "name": "纸狐",
+  "group": "动物"
+ },
+ {
+  "id": "fox-pixel",
+  "name": "像素狐",
+  "group": "动物"
+ },
+ {
+  "id": "fox-riso",
+  "name": "孔版狐",
+  "group": "动物"
+ },
+ {
+  "id": "fox-sketch",
+  "name": "素描狐",
+  "group": "动物"
+ },
+ {
+  "id": "frog",
+  "name": "青蛙",
+  "group": "动物"
+ },
+ {
+  "id": "gearbot",
+  "name": "齿轮机器人",
+  "group": "机器与物件"
+ },
+ {
+  "id": "glasses",
+  "name": "眼镜男",
+  "group": "人物"
+ },
+ {
+  "id": "grandpa",
+  "name": "爷爷",
+  "group": "人物"
+ },
+ {
+  "id": "granny",
+  "name": "奶奶",
+  "group": "人物"
+ },
+ {
+  "id": "hamster",
+  "name": "仓鼠",
+  "group": "动物"
+ },
+ {
+  "id": "hedgehog",
+  "name": "刺猬",
+  "group": "动物"
+ },
+ {
+  "id": "hijabi",
+  "name": "头巾女孩",
+  "group": "人物"
+ },
+ {
+  "id": "kamran",
+  "name": "作者本人",
+  "group": "人物"
+ },
+ {
+  "id": "knight",
+  "name": "骑士",
+  "group": "人物"
+ },
+ {
+  "id": "koala",
+  "name": "考拉",
+  "group": "动物"
+ },
+ {
+  "id": "lantern",
+  "name": "灯笼",
+  "group": "机器与物件"
+ },
+ {
+  "id": "mouse",
+  "name": "老鼠",
+  "group": "动物"
+ },
+ {
+  "id": "nurse",
+  "name": "护士",
+  "group": "人物"
+ },
+ {
+  "id": "otter",
+  "name": "水獭",
+  "group": "动物"
+ },
+ {
+  "id": "owl",
+  "name": "猫头鹰",
+  "group": "动物"
+ },
+ {
+  "id": "panda",
+  "name": "熊猫",
+  "group": "动物"
+ },
+ {
+  "id": "penguin",
+  "name": "企鹅",
+  "group": "动物"
+ },
+ {
+  "id": "pirate",
+  "name": "海盗",
+  "group": "人物"
+ },
+ {
+  "id": "postbot",
+  "name": "邮差机器人",
+  "group": "机器与物件"
+ },
+ {
+  "id": "pug",
+  "name": "巴哥犬",
+  "group": "动物"
+ },
+ {
+  "id": "raccoon",
+  "name": "浣熊",
+  "group": "动物"
+ },
+ {
+  "id": "radio",
+  "name": "收音机",
+  "group": "机器与物件"
+ },
+ {
+  "id": "redpanda",
+  "name": "小熊猫",
+  "group": "动物"
+ },
+ {
+  "id": "rocket",
+  "name": "火箭",
+  "group": "机器与物件"
+ },
+ {
+  "id": "scientist",
+  "name": "科学家",
+  "group": "人物"
+ },
+ {
+  "id": "scout",
+  "name": "探险家",
+  "group": "人物"
+ },
+ {
+  "id": "sheep",
+  "name": "绵羊",
+  "group": "动物"
+ },
+ {
+  "id": "sikh",
+  "name": "锡克小哥",
+  "group": "人物"
+ },
+ {
+  "id": "skater",
+  "name": "滑板手",
+  "group": "人物"
+ },
+ {
+  "id": "sloth",
+  "name": "树懒",
+  "group": "动物"
+ },
+ {
+  "id": "tiger",
+  "name": "老虎",
+  "group": "动物"
+ },
+ {
+  "id": "toaster",
+  "name": "烤面包机",
+  "group": "机器与物件"
+ },
+ {
+  "id": "tv",
+  "name": "电视机",
+  "group": "机器与物件"
+ },
+ {
+  "id": "wizard",
+  "name": "巫师",
+  "group": "人物"
+ }
+]

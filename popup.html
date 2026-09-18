@@ -1,0 +1,1249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>任务台</title>
+<!-- 主题（v0.18.0）。★ theme.js 必须在这儿**同步**加载 —— 它保证「首帧就是正确颜色」，
+     放到 body 末尾会先闪一帧白。与管理页共用同一个 localStorage 键，
+     所以两边切一次、两边都变。理由详见 theme.js 抬头。
+     ★ 这段注释里刻意不写出那个样式标签的字面量（测试要断言「谁在谁之前」）。 -->
+<link rel="stylesheet" href="theme.css">
+<script src="theme.js"></script>
+<style>
+:root{
+  /* 状态色取自成熟看板工具的通行惯例：
+     灰=未承诺(要视觉后退) / 蓝=活跃 / 灰紫=完成(要最低调) / 紫=等待态(必须区别于活跃)
+     ★★ v0.20.0：完成态从「绿」改成「灰紫 #8e88b8」。
+       绿与紫是**近互补色**，同框时人眼会把它们读成两个互不相干的色块 ——
+       这是「几个颜色堆叠在一起」最主要的来源。绿的 5 处定义里，材质层那几处先退出，
+       最后只留热力图一处（老大拍板：热力图的绿辨识度高，值得为它留一个色相）。 */
+  --s-todo:#98a0ad; --s-doing:#6b79da; --s-done:#8e88b8; --s-hold:#8b6ba6;
+  --ink:#17181c; --ink2:#5c636e; --ink3:#8d949e;
+  --r-lg:14px; --r-md:10px; --r-sm:9px; --r-win:16px;   /* 标签页形态的外框圆角（弹窗形态用不了，见 html,body 那段注释） */
+  --glass-hi:inset 0 1px 0 rgba(255,255,255,.72);
+  /* ★ 卡片那道高光原来是 .78，跟面板的 .72 **不是一档** —— 变量化时不许
+     顺手并进 --glass-hi（那就等于偷偷把高光调淡了）。所以单独一个变量。 */
+  --card-hi:inset 0 1px 0 rgba(255,255,255,.78);
+  /* 下面三个是卡片染色强度。觉得颜色太淡就把数字调大，太花就调小。
+     --tint-a 卡片填充 / --tint-b 卡片描边 / --head-a 列头色底
+     上限参考：一旦 --tint-a 超过 .2，四列并排就会变成四块彩色板，毛玻璃的通透感会没了。 */
+  /* ★★ v0.19.0：--tint-a 从 .13 降到 .08。
+     原因：卡片这一版变成了**玻璃**，它要透出下层的光晕。染色一旦到 .13，
+     那层状态色就把玻璃的通透盖住了 —— 看起来还是「一块刷了颜色的板」，
+     不是「一块吸住了背景色的玻璃」。
+     ★ 描边 --tint-b 只从 .32 降到 .24（小降）：描边不遮内部，
+       它是卡片身份的一部分，不该跟着一起弱化。
+     ★ 列头 --head-a 从 .17 升到 .20：列身变成了透明容器（见 .col.glass），
+       列头此刻是**这一列唯一还在承载状态色的地方**，得把它加强一点补回来。 */
+  /* ★★ v0.20.0：--head-a 从 .20 降到 .14。
+     上一版为了「列身透明、列头是这一列唯一还承载状态色的地方」把它加强过 ——
+     但四列并排时，四条约 20% 的彩色列头本身就是**一屏四块颜色**。
+     降到 .14：列头仍带身份，但不再跟卡片争主角。 */
+  /* ★★★★★ v0.21.1：--head-a 从 .14 降到 **.075**（-46%）。
+     老大看图后的原话是「现在的背景颜色还是太浓郁了」——
+     量的结果很明确：**列头带是全页最浓处**（chroma 18.45，是第二名的近 2 倍），
+     卡片反而是最干净的（列体中部 5.27，v0.21.0 刚把它去色）。
+     四档候选一起出图比过，选了「B 中压」：列头仍带身份色，但不再抢主角。
+     ★ 别指望「轻轻降一点」：只降到 .10 那一档实测仅 -7%（色底被同一位置的
+       文字像素稀释了），肉眼几乎看不出 —— 要降就得降到位。 */
+  --tint-a:.08; --tint-b:.24; --head-a:.075;
+  /* 优先级三档的「亮度」已搬到 theme.css（v0.18.0 修）。
+     ★ 原来定义在这个 :root 里，「暗色块必须覆盖亮色块每个键」那条门看不见它，
+       于是加暗色时漏了 --p-* —— 高优先级标题在暗底上成了近黑（对比度 1.16:1）。
+       变量集中到 theme.css 之后，那条门才管得住它。别再搬回来。 */
+}
+*{box-sizing:border-box}
+/* 别删这条：我们给 .archfly / .holdfly 之类设了 display:flex，
+   会盖掉 [hidden] 自带的 display:none（UA 样式优先级极低），hidden 属性会彻底失效。 */
+[hidden]{display:none!important}
+/* 弹窗尺寸：Chrome 弹窗上限是 800×600，这里定死 560×580 */
+/* ★★ 为什么这里不是圆角、也不是透明（别再改回去）
+   弹窗那个「框」是 Chrome 自己绘制的，官方没有任何 CSS / manifest / API 能改它的外形：
+     · Chromium 里 popup 用 views::BubbleDialogDelegateView，扩展侧只有 HTML 可控；
+     · 官方 issue「Cannot change extensions' popup's shape」状态是 Won't fix；
+     · 源码里显式 set_use_round_corners(false)，所以四角就是方的。
+   试过的错法：页面设 transparent + 只在 .app 上画圆角 —— 结果窗口仍是方块，
+   于是变成「一个白方块里套一张圆角卡」，四角那道缝比不做还难看。
+   正确做法（用户拍板）：底色直接铺满整个窗口，做成「一整块面板」，不留内外两层边界。
+   标签页形态（html.as-tab）不是窗口，那里继续用圆角 + 投影。 */
+html,body{margin:0;width:560px;height:580px;overflow:hidden;background:var(--bg-4)}
+/* 被当普通标签页打开时（不支持弹窗的 Chromium 分支，比如 Tabbit，会走这条兜底路径），
+   把定死的弹窗尺寸放开，换成宽版居中布局 */
+html.as-tab,html.as-tab body{width:auto;height:auto;overflow:visible}
+html.as-tab body{min-height:100vh}
+/* 被当标签页打开时（Tabbit 这类不支持弹窗的分支）：留出边距，让圆角看得出来 */
+html.as-tab .app{height:calc(100vh - 20px);max-width:920px;margin:10px auto;box-shadow:0 8px 28px rgba(20,24,35,.12);border-radius:var(--r-win)}
+html.as-tab .board{padding:12px 16px 16px}
+html.as-tab .board{grid-template-columns:repeat(3,minmax(0,1fr)) 42px}
+
+/* ---------- 浮到桌面时的形态（v0.10.0）----------
+   浮窗里装的是本页的 iframe（同源，chrome.* 全都可用 —— 这是实测出来的主路径）。
+   浮窗给的内尺寸是 561×581，比设计的 560×580 各多 1px：
+   这里就把定死尺寸放开、交给浮窗，否则右下角会一直露一条缝。
+   ★ 判断必须优先于 as-tab：在 iframe 里 chrome.tabs.getCurrent 可能返回宿主的标签页，
+     会把本页误判成「标签页形态」——宽版布局塞进 560px 的浮窗会直接散架。
+     所以 popup.js 里用 URL 上的 ?pip=1 先判，命中就不再走 as-tab。 */
+html.as-pip,html.as-pip body{width:100%;height:100%;overflow:hidden}
+html.as-pip .app{height:100%}
+body{
+  color:var(--ink);
+  font:400 13px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+body.dragging-on{cursor:grabbing}
+body.dragging-on *{cursor:grabbing!important}
+
+/* ---------- 玻璃通用件 ---------- */
+.glass{
+  background:var(--glass);
+  border:1px solid var(--line-hi);
+  /* ★ v0.19.0：模糊与饱和改从 --lg-blur / --lg-sat 取。
+     提饱和是「像玻璃」而不是「像雾」的关键 —— 见 theme.css 令牌那段。 */
+  -webkit-backdrop-filter:blur(var(--lg-blur)) saturate(var(--lg-sat));
+  backdrop-filter:blur(var(--lg-blur)) saturate(var(--lg-sat));
+  box-shadow:0 1px 3px rgba(16,20,32,.05),var(--glass-hi);
+}
+
+/* 底色晕染搬到这里（原来铺在 body 上）：页面要透明才露得出圆角，
+   底色就得画在这个**带圆角的容器**上，否则四角又被填成方的。
+   玻璃要有东西可模糊才有意义，所以底下铺一层晕染。
+   但这层晕染【必须是低饱和的中性色】—— 它只负责给毛玻璃提供质感，
+   不能携带含义。一旦它带明显色相，四列就会各自染上不同的色偏，
+   读起来像是在表达状态，跟真正的状态色抢戏，颜色语言就废了。 */
+.app{
+  height:100%;display:flex;flex-direction:column;position:relative;
+  overflow:hidden;      /* 不设圆角（见上面那段：窗口本身是方的，内层再圆就成了「套一层」） */
+  background:
+    /* ★★ v0.19.0 新增的三层**有色光晕**，铺在中性底色之上。
+       这一层是本轮「背景颜色真正透进组件」的全部来源：
+       卡片是玻璃，它吸进去的就是这三团颜色 —— 所以色相只在这一层出现，
+       卡片自己不带色（带了就会跟状态色/优先级色抢戏，见 theme.css 令牌那段）。
+       ★ 沿用原来那条老规矩：光晕是低饱和的、只给质感不携带含义。
+         三团刻意都偏冷（蓝 / 紫 / 青绿），因为暖色在浅底上会读成「警告」。 */
+    /* ★ 三团的**圆心必须落在窗口内**（v0.19.0 看图后修）。
+       第一版把第三团放在 at 52% 99% —— 圆心在窗口底边外，可见部分只剩
+       一条横贯整宽的色带，看起来像「底部渗出来的水渍」，不是一团光。
+       改用 26% 94% 把它挪进来，光团才读得出形状。
+       ★ 窗口是 560×580 的**竖长**比例，所以三团按左上 / 右上 / 左下分布，
+         中间留白 —— 光晕在中间相遇会互相抵消，反而整片发灰。 */
+    /* ★ 渐隐放到 76%：66% 时色团边缘还看得出一个明确的圆（真机图里是「一块圆斑」），
+       拉到 76% 之后边界才真的化开 —— 光晕要的是「不知道从哪开始」的柔。 */
+    radial-gradient(58% 46% at 12% 4%, var(--glow-1) 0%, transparent 76%),
+    radial-gradient(54% 42% at 92% 16%, var(--glow-2) 0%, transparent 76%),
+    radial-gradient(62% 48% at 26% 94%, var(--glow-3) 0%, transparent 76%),
+    radial-gradient(115% 85% at 6% 0%, var(--bg-1) 0%, transparent 56%),
+    radial-gradient(105% 80% at 94% 3%, var(--bg-2) 0%, transparent 58%),
+    radial-gradient(125% 85% at 50% 103%, var(--bg-3) 0%, transparent 56%),
+    var(--bg-4);
+}
+
+/* ---------- 顶栏 ---------- */
+.bar{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:10px 12px}
+.seg{position:relative;display:flex;padding:2px;gap:2px;border-radius:11px}
+/* ★ 高度必须由 top/bottom 撑开，不能写死像素。
+   写死 26px 时按钮实际约 29px 高（12.5px 字 ×1.55 行高 + 上下各 5px 内距），
+   滑块就被顶在上边、底下短 3px —— 这就是「滑动里的小滑块没对齐」的根因。 */
+.seg-thumb{
+  position:absolute;top:2px;bottom:2px;left:2px;border-radius:var(--r-sm);
+  background:var(--field-solid);box-shadow:0 1px 3px rgba(16,20,32,.14);
+  transition:transform .22s cubic-bezier(.32,.72,0,1),width .22s cubic-bezier(.32,.72,0,1);
+}
+.seg button{
+  position:relative;z-index:1;border:0;background:transparent;color:var(--ink2);font:inherit;font-size:12.5px;
+  padding:5px 11px;border-radius:var(--r-sm);cursor:pointer;transition:color .18s;white-space:nowrap;
+}
+.seg button:hover{color:var(--ink)}
+.seg button.on{color:var(--ink);font-weight:500}
+.spacer{flex:1 1 auto}
+.btn-ghost{
+  color:var(--ink2);font:inherit;font-size:12.5px;
+  padding:5px 11px;border-radius:var(--r-sm);cursor:pointer;
+  transition:color .15s,background .15s,border-color .15s;
+}
+.btn-ghost:hover{color:var(--ink);background:var(--field-solid)}
+
+/* ★ 这里原来是一整块「首次引导」提示条（.hintbar）：一条又长又密的用法说明，
+   只在没看过的时候出现一次。用户明确说「删除掉不需要的额外提示」—— 已整块删除
+   （样式 / 结构 / 关闭按钮的绑定 / onboarded 标记，四处一起清掉，不留半截）。
+   这些功能现在都在用；设置页「使用说明」里还留着完整版，需要时查得到。
+   不要再加回来。 */
+
+/* ---------- 捕获行：常驻，弹窗一开就能打字 ---------- */
+.composer{flex:0 0 auto;display:flex;gap:6px;padding:0 12px 10px}
+.composer input{
+  font:inherit;font-size:12.5px;color:var(--ink);border-radius:var(--r-sm);
+  padding:6px 10px;outline:none;transition:border-color .15s,background .15s;
+  flex:1 1 auto;min-width:0;
+}
+.composer input::placeholder{color:#a8aeb8}
+.composer input:focus{border-color:rgba(120,150,240,.7);background:var(--field-solid)}
+/* ★ 这里原来是 .composer select（原生下拉）。它的选项列表由操作系统绘制、
+   CSS 完全碰不到 —— 所谓「下拉效果简陋」不是样式没写好，是根本改不了。
+   已换成自绘的 .selbtn + .selpop，见下面那一整块。 */
+
+/* ---------- 自绘下拉（苹果风玻璃）----------
+   为什么浮层要挂 body + position:fixed：触发按钮带 .glass（backdrop-filter），
+   backdrop-filter 不为 none 的元素会成为 fixed 后代的「包含块」——
+   浮层若留在按钮里，坐标会以按钮为原点算，一开就飞出去。
+   （和拖动卡片、快速改期浮层是同一个坑，那两处注释里也写了。） */
+.selbtn{
+  display:flex;align-items:center;gap:6px;flex:0 0 auto;max-width:118px;
+  font:inherit;font-size:12.5px;color:var(--ink2);cursor:pointer;
+  border-radius:var(--r-sm);padding:6px 10px;
+  transition:border-color .15s,background .15s,color .15s;
+}
+.selbtn:hover{color:var(--ink)}
+.selbtn.selon{color:var(--ink);border-color:rgba(120,150,240,.7);background:var(--field-solid)}
+.selbtn .seltxt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 箭头用两条 border 转 45° 画，不引 SVG —— 省一个元素，颜色还能跟着 currentColor 走 */
+.selbtn .chev{
+  flex:0 0 auto;width:6px;height:6px;margin-left:auto;
+  border-right:1.4px solid currentColor;border-bottom:1.4px solid currentColor;
+  transform:rotate(45deg);
+  transition:transform .28s cubic-bezier(.22,1,.36,1);
+}
+.selbtn.selon .chev{transform:rotate(-135deg)}
+
+.selpop{
+  position:fixed;z-index:420;box-sizing:border-box;
+  display:flex;flex-direction:column;gap:1px;
+  padding:5px;border-radius:13px;
+  /* ★ 必须给高度上限 —— 项目可以有几十个，不封顶的话面板会长到四五百像素，
+     直接冲出 580 高的弹窗，表现是「下拉弹出来、一半在窗外」（下面 ::-webkit-scrollbar
+     的样式本来就写好了，说明当初就打算让它滚，只是漏了这两行）。 */
+  max-height:min(320px,calc(100vh - 20px));
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  /* 玻璃三件套：模糊 + saturate + 亮边。
+     saturate 是让透过来的颜色不发灰的关键；那道 1px 亮边则是「显不显廉价」的分水岭。 */
+  background:var(--card);
+  border:1px solid var(--line2);
+  -webkit-backdrop-filter:blur(24px) saturate(180%);
+  backdrop-filter:blur(24px) saturate(180%);
+  box-shadow:var(--glass-hi),
+             0 16px 38px -14px rgba(16,20,32,.42),
+             0 2px 8px -2px rgba(16,20,32,.12);
+  /* ★ 「下滑展开」＝从上沿往下拉开：scaleY .86 → 1，origin 在顶部。
+     曲线 cubic-bezier(.22,1,.36,1)（快出慢收）—— 这就是苹果那套「轻柔拉伸」的读感，
+     比单纯 opacity 淡入多一层「面板被拉出来」的物理感。
+     朝上弹时 js 会把 transform-origin 翻成 bottom center，否则方向会反。 */
+  transform:scaleY(.86) translateY(-3px);
+  transform-origin:top center;
+  opacity:0;
+  transition:transform .22s cubic-bezier(.22,1,.36,1),opacity .16s ease;
+}
+.selpop.show{transform:none;opacity:1}
+.selpop::-webkit-scrollbar{width:6px}
+.selpop::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.selopt{
+  display:flex;align-items:center;gap:8px;
+  border:0;background:transparent;font:inherit;font-size:12.5px;
+  color:var(--ink2);text-align:left;
+  padding:6px 9px;border-radius:9px;cursor:pointer;white-space:nowrap;
+  transition:background .12s,color .12s;
+}
+.selopt span{overflow:hidden;text-overflow:ellipsis}
+.selopt:hover{background:rgba(90,125,220,.13);color:var(--ink)}
+.selopt.on{color:var(--ink);font-weight:500;background:rgba(90,125,220,.1)}
+/* 选中勾同样用 border 转 45° 画，margin-left:auto 把它顶到最右 */
+.selopt.on::after{
+  content:"";flex:0 0 auto;margin-left:auto;width:5px;height:9px;
+  border-right:1.7px solid rgba(74,114,232,.95);
+  border-bottom:1.7px solid rgba(74,114,232,.95);
+  transform:rotate(45deg) translate(-1px,-1px);
+}
+/* 减少动态效果：不要「拉伸展开」，面板直接到位（信息一点没少，只是没有形变） */
+@media (prefers-reduced-motion:reduce){
+  .selpop{transform:none;transition:opacity .12s ease}
+  .selbtn .chev{transition:none}
+}
+
+/* ---------- 看板：三列 + 右侧挂起窄条 ---------- */
+.board{
+  flex:1 1 auto;min-height:0;display:grid;position:relative;
+  grid-template-columns:repeat(3,minmax(0,1fr)) 36px;
+  grid-template-rows:minmax(0,1fr);
+  gap:7px;padding:0 12px 10px;
+}
+.col{
+  --tint:152,160,173; --sc:var(--s-todo);
+  display:flex;flex-direction:column;min-height:0;border-radius:var(--r-col);
+  /* transform / box-shadow 也进过渡：磁吸反馈是**跟着指针实时变化的**状态，
+     曲线用 cubic-bezier(.32,.72,0,1)（快出慢收），读起来才像「被吸过来」而不是「跳一下」。 */
+  transition:border-color .14s,background .14s,
+             transform .18s cubic-bezier(.32,.72,0,1),
+             box-shadow .18s cubic-bezier(.32,.72,0,1);
+}
+/* ★★ v0.19.0：列**主动放弃玻璃**（尽管 HTML 上还挂着 .glass 类）。
+   为什么必须放弃：卡片这一版接管了玻璃（见 .card 那段），而「玻璃叠玻璃」
+   会让两层模糊各算各的 —— 卡片发灰发浑、状态色一起脏。同一个区域内
+   **只允许一层玻璃**，这条规矩没变，只是这次换了宿主（列 → 卡）。
+   ★ 实现上不动 HTML（去掉 class 会碰到 HTML 类的变异锚点），
+     用 .col.glass（0,2,0）压过 .glass（0,1,0）—— 特异度就够了，不用 !important。
+   ★ 列退成透明容器之后，卡片吸到的才是**页面级光晕**（.app 上那三层），
+     而不是先被列的模糊糊掉一遍。这正是「背景真正透进组件」要的那一层。 */
+.col.glass{
+  /* ★ v0.19.0 看图后修：原来写的是 transparent（列完全透明），
+     结果三列读起来像「三个虚线框」，已完成列下面那一大片空白尤其空。
+     给一层**极淡的状态色面**（.045）补上容器感 ——
+     注意它是「色面」不是「玻璃」：不带 backdrop-filter，
+     所以不构成第二层玻璃，与上面那条「一个区域只允许一层玻璃」不冲突。
+     ★ 为什么用 var(--tint) 而不是另起一个变量：--tint 是元素级解析的，
+       这里的 .col.glass（0,2,0）与后面的 .col[data-status]（0,2,0）特异度相同、
+       源序在后，所以取到的是那一条设的状态色 —— 正是我们要的。 */
+  background:rgba(var(--tint),.045);
+  border:1px solid var(--line2);
+  -webkit-backdrop-filter:none;backdrop-filter:none;
+  box-shadow:none;
+}
+.col[data-status="todo"] {--tint:152,160,173;--sc:var(--s-todo)}
+.col[data-status="doing"]{--tint:107,121,218;--sc:var(--s-doing)}
+.col[data-status="done"] {--tint:142,136,190;--sc:var(--s-done)}
+/* ★ 磁吸的「吸力」主要靠这一条给：列轻微鼓起 + 边缘亮起来 + 内部透出一圈同色内发光。
+   用 transition 而不是 animation —— 指针还在动，这是实时状态；一次性 keyframe 播完就停，
+   反而对不上手指。
+   ★ 这里的 transform 不会把拖拽中的卡片困住：那会儿卡片已经被挪到 body 下了，
+     列上的 transform 只作用于还留在列里的内容（这正是我们要的「整列被吸得鼓起来」）。 */
+.col.drop-target{
+  border-color:rgba(var(--tint),.8);background:rgba(var(--tint),.14);
+  transform:scale(1.012);
+  box-shadow:inset 0 0 0 1.5px rgba(var(--tint),.45),
+             inset 0 0 22px -6px rgba(var(--tint),.5),
+             0 8px 22px -12px rgba(var(--tint),.6);
+}
+.col.drop-target .col-head .count{color:rgba(var(--tint),1);font-weight:600}
+.col-head{
+  flex:0 0 auto;display:flex;align-items:center;gap:6px;
+  padding:9px 10px 8px;border-radius:var(--r-col) var(--r-col) 0 0;
+  background:rgba(var(--tint),var(--head-a));border-bottom:1px solid var(--line-hi);
+}
+.sdot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;background:var(--sc)}
+.col-head .name{font-size:12px;font-weight:500;color:var(--ink)}
+.col-head .count{margin-left:auto;font-size:14px;font-weight:500;letter-spacing:-.02em;
+  color:var(--ink3);font-variant-numeric:tabular-nums}
+/* ★ v0.19.0 编辑式排版：列头计数从 11.5px 提到 14px 并加重。
+   这是弹窗里**唯一够格做「展示级数字」的位置** —— 弹窗是 560×580 的高密度工具，
+   把标题一起放大（16~18px）会直接挤掉一屏的信息量（本轮拍板就是「只放大数字」）。
+   字号变大后必须配 tabular-nums 与负字距：等宽数字防抖动，负字距防「大字形散」。 */
+.col-head .count.hot{color:#c07a4a;font-weight:500}
+.col-body{
+  flex:1 1 auto;min-height:56px;overflow-y:auto;overflow-x:hidden;
+  padding:7px;display:flex;flex-direction:column;gap:5px;
+}
+.col-body::-webkit-scrollbar{width:6px}
+.col-body::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.col-body:empty::after{
+  content:attr(data-empty);display:block;text-align:center;
+  font-size:11px;color:var(--ink4);padding:14px 0;
+}
+
+/* ---------- 挂起窄条：右侧一条紫边，点开才浮出内容 ---------- */
+.rail{
+  --tint:139,107,166; --sc:var(--s-hold);
+  display:flex;flex-direction:column;align-items:center;gap:7px;
+  padding:9px 0 8px;border-radius:var(--r-lg);cursor:pointer;
+  border-style:dashed;border-color:rgba(var(--tint),.42);
+  background:var(--glass);
+  transition:border-color .14s,background .14s;
+}
+.rail:hover{background:rgba(var(--tint),.1)}
+.rail.drop-target{
+  border-color:rgba(var(--tint),.95);background:rgba(var(--tint),.22);
+  transform:scale(1.05);
+  box-shadow:0 0 0 1.5px rgba(var(--tint),.45),0 6px 18px -10px rgba(var(--tint),.8);
+}
+.rail .sdot{width:7px;height:7px;margin-top:1px}
+.rail-name{
+  /* margin:auto 0 把自由空间平分成上下两份，文字就落在圆点和计数之间居中，
+     不然窄条那么高、字却挤在顶上，看着很别扭 */
+  margin:auto 0;
+  writing-mode:vertical-rl;font-size:11.5px;letter-spacing:.14em;
+  color:#6f5a86;user-select:none;
+}
+.rail-count{
+  min-width:19px;padding:1px 4px;border-radius:99px;
+  background:rgba(var(--tint),.18);color:#6f5a86;
+  font-size:11.5px;text-align:center;font-variant-numeric:tabular-nums;
+}
+
+/* ---------- 挂起浮层：窄条点开后的内容面板 ----------
+   停在窄条左边（right:55px = 窄条 36 + 间隙 7 + 内边距 12），这样窄条本身还露在外面，
+   再点一下就能收回去。它是 .board 的绝对定位子元素，所以跟着看板区域走，不会盖住顶栏。 */
+.holdfly{
+  --tint:139,107,166; --sc:var(--s-hold);
+  position:absolute;top:0;right:55px;bottom:10px;width:240px;z-index:150;
+  display:flex;flex-direction:column;gap:7px;padding:10px;
+  border-radius:var(--r-lg);
+  /* 比列再实一点：它是浮在上面的「抽屉」，透太多会跟底下的列糊成一片 */
+  background:var(--card);
+  border:1px solid var(--line2);
+  -webkit-backdrop-filter:blur(28px) saturate(150%);
+  backdrop-filter:blur(28px) saturate(150%);
+  box-shadow:0 14px 40px -12px rgba(16,20,32,.3),var(--glass-hi);
+  opacity:0;transform:translateX(10px) scale(.985);pointer-events:none;
+  transition:opacity .17s ease,transform .17s ease;
+}
+.holdfly.show{opacity:1;transform:none;pointer-events:auto}
+/* 拖拽时浮层必须让路，否则 elementFromPoint 判定落点会一直命中浮层 */
+body.dragging-on .holdfly{pointer-events:none}
+.holdfly-head{display:flex;align-items:center;gap:6px;font-size:11.5px;color:#6f5a86}
+.holdfly-head .name{font-weight:500;color:#5b4870}
+.holdfly-head .count{margin-left:auto;font-variant-numeric:tabular-nums}
+.holdfly-body{
+  flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;
+  display:flex;flex-direction:column;gap:5px;
+}
+.holdfly-body::-webkit-scrollbar{width:6px}
+.holdfly-body::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.holdfly-empty{font-size:11px;color:var(--ink4);text-align:center;padding:16px 0}
+
+/* ---------- 归档抽屉 ----------
+   归档是**一份只读的历史清单**，不是「第四列」——
+   挂起是「还在手头、只是暂时搁着」（所以缩成一条窄边，随时能瞟一眼）；
+   归档是「已经结束、收起来了」，两件事性质不同，所以它盖住整个看板区。
+   ★ 只提供**逐条取回**，不再有「一键全恢复」：
+     用户原话是「点击归档后又恢复归档，这样来回操作会把我已有的信息打乱掉」——
+     全量恢复才是那个把看板一次翻乱的动作，逐条取回才可控。 */
+.archfly{
+  --tint:120,130,150; --sc:#8892a4;
+  position:absolute;top:0;left:12px;right:12px;bottom:10px;z-index:160;
+  display:flex;flex-direction:column;gap:7px;padding:10px;
+  border-radius:var(--r-lg);
+  /* 比列再实一点：它整块盖在三个列上面，透太多会跟底下的卡片糊成一片 */
+  background:var(--card);
+  border:1px solid var(--line2);
+  -webkit-backdrop-filter:blur(28px) saturate(150%);
+  backdrop-filter:blur(28px) saturate(150%);
+  box-shadow:0 14px 40px -12px rgba(16,20,32,.3),var(--glass-hi);
+  opacity:0;transform:translateX(10px) scale(.985);pointer-events:none;
+  transition:opacity .17s ease,transform .17s ease;
+}
+.archfly.show{opacity:1;transform:none;pointer-events:auto}
+.archfly-head{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ink2)}
+.archfly-head .name{font-weight:500;color:var(--ink)}
+.archfly-head .count{margin-left:auto;font-variant-numeric:tabular-nums;color:var(--ink3)}
+.archfly-head .x{
+  border:0;background:transparent;color:#a8aeb8;font-size:15px;line-height:1;
+  cursor:pointer;padding:0 4px;border-radius:5px;
+}
+.archfly-head .x:hover{color:var(--ink);background:rgba(16,20,32,.06)}
+.archfly-body{
+  flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;
+  display:flex;flex-direction:column;gap:5px;
+}
+.archfly-body::-webkit-scrollbar{width:6px}
+.archfly-body::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.archfly-empty{font-size:11.5px;color:var(--ink4);text-align:center;padding:22px 0}
+/* 归档卡只读：能看、能一键取回，但不在这里就地改内容 ——
+   已归档的条目就地编辑，会让人分不清改的是「归档里的那条」还是看板上的原任务。 */
+.archfly .card{cursor:default}
+.archfly-row{display:flex;align-items:center;gap:7px}
+.archfly-row .card{flex:1 1 auto;min-width:0}
+.archfly-row .back{
+  flex:0 0 auto;border:1px solid rgba(120,150,240,.45);background:var(--blue-bg);
+  color:var(--blue-ink);font:inherit;font-size:11px;padding:4px 8px;border-radius:8px;
+  cursor:pointer;transition:background .14s,border-color .14s;
+}
+.archfly-row .back:hover{background:var(--blue-bg-hover);border-color:rgba(120,150,240,.75)}
+
+/* ---------- 卡片 ---------- */
+/* 注意：卡片这里不能写 --tint 的默认值，否则会盖掉从 .col / .holdfly 继承来的状态色
+   （元素自身的声明优先级高于继承），挂起浮层里的卡就会变成灰的。用 var() 的兜底值代替。 */
+.card{
+  position:relative;
+  /* ★ z-index:0 不是为了排版，是为了**给下面两个伪元素定层**：
+     它建立层叠上下文，伪元素的 z-index:-1 才会落在
+     「卡片自己的背景之上、卡片内容之下」那一层。
+     少了它，伪元素会跑到卡片外面去（盖住列、甚至盖住整页）。 */
+  z-index:0;
+  border-radius:var(--r-card);padding:9px 10px;
+  cursor:grab;touch-action:none;user-select:none;
+  /* ★★★★★ v0.21.0：卡片**不再往自己身上铺状态色淡面**（原来是 rgba(--tint,--tint-a)，
+     .08）。拍板原话是「透明磨砂状，里面不要放颜色」—— 卡内两层颜色（这层 + 伪元素色团）
+     一起去掉，卡片就只剩「一块玻璃」。状态色仍然在**描边**上（下面那行 border），
+     描边属于边界、不属于「里面」，列与列之间还认得出来。 */
+  background:var(--lg-card);
+  border:1px solid rgba(var(--tint,152,160,173),var(--tint-b));
+  /* ★★ v0.19.0：**卡片接管玻璃**（列在同一版里主动放弃了它，见上面 .col.glass）。
+     规则没变 —— 一个区域只允许一层玻璃；变的只是玻璃层换了个宿主。为什么必须换：
+     卡片的质感要看「液态斑 + 颗粒噪点」，而这两样必须长在玻璃层**自己这一侧**。
+     卡片带 backdrop-filter，它看到的是模糊之后的下层 ——
+     把纹理画在列上或页面底上，会被这一层模糊直接抹平，等于白加。
+     ★ 以前那条注释（「卡片不叠 backdrop-filter，因为它下面就是列的毛玻璃」）
+       不是错了，是**前提变了**：列的毛玻璃撤了，叠的问题也就不存在了。
+       那段话描述的是「别在两个相邻层各糊一次」，这条原则仍在，只是这次
+       由列来让路 —— 让路的是外壳，不是内容。
+     ★ 玻璃底用 --lg-card 而不是 --card：--card 在设置页是**浮层实底**（纯白），
+       两个语义共用一个键必出事（见 theme.css 令牌那段）。
+     ★ 拖拽态 .card.dragging 另有更强的模糊（它已脱离列、悬在整个看板上方）。 */
+  -webkit-backdrop-filter:blur(var(--lg-blur)) saturate(var(--lg-sat));
+  backdrop-filter:blur(var(--lg-blur)) saturate(var(--lg-sat));
+  /* 三层合起来才叫体积感：外投影把卡抬起来 / 顶部高光让棱边接住光 /
+     底部内发光把光弹回来（有厚度）。缺任何一层都会掉回「平面色块」。 */
+  box-shadow:var(--sh-card),var(--card-hi),var(--sh-card-in);
+  transition:transform .08s,opacity .15s,box-shadow .15s;
+}
+/* ---------- 液态渐变层 + 颗粒噪点层（v0.19.0）----------
+   ★ 为什么挂伪元素而不是加 DOM：.card 本来就有 position:relative，
+     且全站 ::before / ::after **一个都没被占用**（下手前 grep 过）——
+     DOM 一行不动，所有 HTML 结构的断言与变异锚点就都不会破。
+   ★ inset:0 + border-radius:inherit，而不是 inset:-24% 让色斑溢出：
+     溢出必须配父级 overflow:hidden，而卡片**不能加** overflow:hidden ——
+     拖拽态（fixed）与编辑态（撑开成表单）都会被它裁掉。
+     不溢出、只靠 blur 把色团晕开，效果够且更稳。
+   ★ pointer-events:none 是硬要求，不是优化：噪点层铺满整张卡，
+     不设这一条，卡片立刻就点不动、拖不走了 —— 这类「新加的装饰层
+     悄悄吃掉交互」的坑，本仓库栽过不止一次。
+   ★ z-index:-1 让两层都落在「卡片背景之上、文字之下」：
+     颜色藏在玻璃内部（而不是盖在字上），文字始终是清晰的 —— 这就是第⑤条
+     「清晰，背景模糊」的前后关系。 */
+.card::after{
+  content:"";position:absolute;inset:0;border-radius:inherit;
+  pointer-events:none;z-index:-1;
+}
+/* 液态渐变：三团圆心错开、半径不等的色斑。
+   刻意不用 linear-gradient —— 线性渐变有个可辨认的**方向**，
+   那个方向一出现，观感立刻掉回「贴了一层渐变」。
+   ★★ 这里**不叠 filter:blur**（设置页的大面板才叠）。
+     理由是从 computed style 里量出来的：卡片只有约 140×60，
+     而 blur(18px) 的采样圈约等于色斑本身的尺寸 —— 三团颜色被互相均匀化，
+     产出是「一片平均过的淡色」，量测能看见 filter 在跑、但视觉上看不出斑。
+     而 radial-gradient 渐隐到 transparent **本身就是柔和过渡**，
+     再叠一层模糊是多余的：模糊是用来消灭硬边的，这里没有硬边。
+     ★ 大面板（.bd-card 等）保留 blur —— 那里的斑够大，模糊才有意义，
+       而且 --liq-blur 这个令牌需要一个真实消费者，否则就是个没人用的死变量。 */
+/* ★★★★★ v0.21.0：卡片内的**色团整个撤掉**（拍板「透明磨砂，里面不要放颜色」）。
+   原来这里是三层 radial-gradient（紫蓝，α .40/.44/.34 再乘 --lg-liq-a）。
+   ★ 为什么是「删掉」而不是「把色团调成更淡的 --liq-*」：老大要的是一块玻璃，
+     不是一块**很淡的紫玻璃** —— 只要还有色斑，卡片就仍然读作「一块有颜色的卡」。
+     这一步和 v0.20.0 的「砍 α」不是同一件事：那一版砍的是**浓淡**，这一版砍的是**有无**。
+   ★ --liq-* / --lg-liq-a 三个令牌**不删**：设置页的大面板（.bd-card 等）还在用它们，
+     而静态门 13k「色相预算」守的正是这几个令牌的定义 —— 删令牌等于把门一起架空。
+     所以「卡片无形」这一条靠**新断言**守（.card 不许再挂含 background 的 ::before），
+     不靠删变量守。
+   ★ 颗粒噪点层（::after）**照留**：它是材质，不是颜色 —— 噪声越明显越不像塑料渐变。 */
+/* 颗粒噪点：整张图比卡片大得多（160×160）且 stitchTiles 无缝，所以平铺开来
+   看不出格子的重复。★ 它是 overlay 混合而不是直接半透明覆盖 ——
+   overlay 让噪声「跟着底下的明暗走」（亮处更亮、暗处更暗），
+   这才是胶片颗粒的物理行为；直接盖一层灰会整体糊上一层脏雾。 */
+.card::after{
+  background-image:var(--grain);
+  opacity:var(--grain-a);
+  mix-blend-mode:overlay;
+}
+/* ★ 这条 hover 原来只写一层浅阴影 —— 那会把上面三层体积感整个顶掉
+   （box-shadow 是整体替换，不是叠加），鼠标一放上去卡片就「瘪」了。
+   所以这里必须把三层原样带上，只在最前面加一道更近的加深。 */
+.card:hover{box-shadow:0 2px 10px -4px rgba(24,34,64,.16),var(--sh-card),var(--card-hi),var(--sh-card-in)}
+/* ★ 面板内键盘流的光标（v0.9.0）：键盘走到哪张卡。
+   用 outline 而不是改 border —— border 会改盒模型尺寸，整列高度跟着抖一下；
+   outline 不占空间。单独一个类，不用 :focus（这是「键盘光标」，不是浏览器焦点，
+   :focus 还会和编辑态的输入焦点打架）。 */
+.card.kb-on{outline:2px solid rgba(74,114,232,.7);outline-offset:1px}
+/* ★ 按压回弹只对「静态卡片」生效 —— 编辑态与拖动态显式排除。
+   编辑卡里全是 .card 的内部元素（标题/备注/日期/项目/三档），点谁都会一路冒泡触发
+   :active，整张卡跟着缩一下 —— 用户原话是「点里面任何一个地方它都会弹一下」。
+   拖动中同理：卡片是 fixed 跟手的，吸附位移写在 .card.dragging 的 transform 上，
+   而 :active 与它同优先级、靠源序竞争（最容易出错的就是这种隐式依赖），直接排除最稳。 */
+.card:not(.editing):not(.dragging):active{transform:scale(.995)}
+.card .ctitle{position:relative;font-size:13px;line-height:1.45;color:var(--ink);word-break:break-word;padding-right:14px}
+
+/* ---------- 浮层里的卡片退回实面（v0.19.0）----------
+   ★ 挂起浮层 / 归档抽屉自己就是玻璃（blur 28），里面再放玻璃卡片就是
+     「玻璃叠玻璃」—— 两层模糊各算各的，卡片发灰发浑、状态色一起脏。
+   这一条与 .col.glass 是**同一条规则的两面**：一个区域内只允许一层玻璃,
+   谁当外壳谁放弃。列那边是列放弃、卡片当玻璃；浮层这边反过来 ——
+   浮层是外壳（它悬在整个看板之上，当玻璃才有空间感），卡片就退回实面。
+   ★ 用 --card 而不是 --lg-card：这里是实面，要能盖住浮层下面的内容。
+   ★ 噪点与液态斑照留 —— 它们是「材质」，不是「玻璃层」，
+     跟要不要 backdrop-filter 是两回事。 */
+.holdfly .card,.archfly .card{
+  -webkit-backdrop-filter:none;backdrop-filter:none;
+  background:var(--card);
+}
+
+/* ---------- 优先级亮度 ----------
+   data-p 只出现在「待办」「进行中」两列：已完成已经用透明度后退了，
+   挂起收在浮层里、浮层里它就是全部内容。给它们再叠一层优先级亮度是双重编码，
+   两套「次要」会互相削弱，反而都读不出来。
+   ★ 不用 opacity 整行变淡 —— 那看起来像「这个按钮禁用了」，
+     而且会连带把项目色点、链接色一起洗掉。只降标题的颜色。 */
+.card[data-p] .ctitle{color:var(--p-low)}
+.card[data-p="mid"] .ctitle{color:var(--p-mid);font-weight:500}
+.card[data-p="high"] .ctitle{color:var(--p-high);font-weight:600}
+.card .cmeta{display:flex;align-items:center;gap:4px;margin-top:5px;font-size:11px;color:var(--ink3)}
+
+/* ---------- 卡片右上角状态点（v0.21.0）----------
+   替代原来跟在项目名后面的「，已过期」三个字。
+   ★ 为什么换成点：那三个字要占 meta 行的宽度（一行只有 124px 可用），
+     而且它只在「今天 / 按日期」两个视图里出现 ——**同一件事在两处视图里长得不一样**。
+     点挂在卡片角上，视图无关，还提前腾回了 meta 行的宽度。
+   ★ 位置就是 .del 那个角（top:4px right:4px）——**不冲突**：
+     .del 是 opacity:0、hover 才现身，静止态这里本来就是空的。
+   ★ 三档：未到期＝不挂（角上留空）/ 今天到期＝橙点 / 已过期＝红点套声波环。
+     「今天」这一档以前跟「未来」一样完全没标记，等于白丢了一天的时间信息。 */
+.card .cdot{
+  position:absolute;top:6px;right:7px;width:7px;height:7px;border-radius:50%;
+  pointer-events:none;transition:opacity .12s;
+}
+.card .cdot.due{background:var(--dot-due)}
+.card .cdot.late{background:var(--dot-late);box-shadow:0 0 0 3px var(--dot-halo)}
+/* hover 时状态点让位给右上角的 × —— 两个东西抢同一个角，必须定谁退。
+   退的是点，因为 × 是「现在就要点」的东西，点只是「看一眼」的信息。 */
+.card:hover .cdot{opacity:0}
+/* 只有真挂了点的卡才给标题让位，没点的卡不白丢 7px 标题宽度。
+   ★ 用 .has-dot 而不是无条件 padding：144px 的窄卡上，标题宽度是金贵的。 */
+.card.has-dot .ctitle{padding-right:21px}
+
+/* ---------- 列头三态：按**形状**分，不按色相（v0.21.0，拍板方案 A）----------
+   ★ 为什么必须换掉纯圆点：三态原来只靠 --s-todo/doing/done 三个色值，量出来的
+     色相是 **217° / 232° / 248°** —— 相邻只差 15°，9px 的点上人眼根本分不出。
+     这不是「点太小」，是「三个色根本就在同一段里」。
+   ★ 为什么用形状：形状不占色相预算（v0.20.0 那条「一屏 2 色相」还在），
+     而且缩小、色盲、灰度打印三种情况下全都成立 —— 颜色这三条一条都做不到。
+   ★ 作用域必须收在 .col-head 里：.sdot 还被挂起 rail / 两个浮层头用着，
+     那三处是单态，跟着改形状属于误伤。
+   ★ 已完成那个勾用 ::after 画（两段边框转 -45°），不引图标字体、不加 DOM ——
+     DOM 一行不动，所有 HTML 结构的断言与变异锚点就都不会破。 */
+/* ★ 11px 不是随手放的：9px 里放不下一个能认出来的勾（出图放大 3 倍看出来的，
+   见 _zoom_210_colhead.png）。11px 与列头 12px 的名字基本同高，也不会撑高列头
+   （列头高度由文字行高决定，不是由这个点决定）。 */
+.col-head .sdot{width:11px;height:11px}
+.col[data-status="todo"] .col-head .sdot{background:transparent;border:1.5px solid var(--sc)}
+/* ★ 已完成**不画圆**，直接是一个勾。
+   第一版是「11px 实心圆 + 圈里一个白勾」，放大 4 倍看糊成一团 —— 因为圆里
+   减掉 3px 边框只剩 8px 可用长度，两段笔画必然贴在一起。
+   ★★ 根因：`*{box-sizing:border-box}` **不匹配伪元素**（`*` 只选元素），
+      `.sdot::after{width:5px}` 其实是**内容宽**，加边框后是 6.5×4.1 ——
+      「把勾的中心压在圆心上」那套算术从第一步就偏了 1px 以上。
+      所以这里显式写 `box-sizing:border-box`，让下面的数可算。
+   ★ 方向上的修正比数字更重要：「点」和「勾」是两种图元，
+     点靠面积、勾靠笔画 —— 勾需要的是**长度**，把它塞进小圆里是南辕北辙。
+     三态于是变成 ○ / ● / ✓，全部靠形状，彼此不可能混。
+   几何（border-box 之后可算）：盒子 11×11；元素 W×H 放在 (L,T)，
+   中心 (L+W/2, T+H/2) 要等于圆心 (5.5,5.5)；旋转 -45° 的包围盒半对角
+   =(W+H)/(2√2) ≤ 5.5 → W+H ≤ 15.6。取 9.5×5.5（和 15）→ L=0.75, T=2.75。
+   ★ 改这些数字时把上面的算术重做一遍，别只改一个。 */
+.col[data-status="done"] .col-head .sdot{background:transparent;border:0;position:relative}
+.col[data-status="done"] .col-head .sdot::after{
+  content:"";position:absolute;box-sizing:border-box;
+  left:.75px;top:2.75px;width:9.5px;height:5.5px;
+  border-left:2px solid var(--s-done);border-bottom:2px solid var(--s-done);
+  transform:rotate(-45deg);
+}
+.card .cmeta .pdot{width:5px;height:5px;border-radius:50%;flex:0 0 auto}
+.card .cmeta .txt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .del{
+  position:absolute;top:4px;right:4px;width:16px;height:16px;line-height:14px;
+  border:0;background:transparent;color:var(--ink4);font-size:14px;text-align:center;
+  border-radius:4px;cursor:pointer;opacity:0;transition:opacity .12s,color .12s;padding:0;
+}
+.card:hover .del{opacity:1}
+.card .del:hover{color:#d0566a;background:var(--danger-bg)}
+.card .clink{
+  display:inline-block;margin-top:4px;max-width:100%;
+  font-size:10.5px;color:var(--accent);text-decoration:none;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.card .clink:hover{text-decoration:underline}
+
+/* 已完成要「最不抢眼」——降透明度表达「结束的东西退到后面去」 */
+.col[data-status="done"] .card{opacity:.72}
+.col[data-status="done"] .card:hover{opacity:1}
+.col[data-status="done"] .card .ctitle{color:var(--ink2)}
+/* 挂起卡【不】降透明度：它只出现在浮层里，而浮层里它就是全部内容，
+   再压透明度纯粹是让人看不清。紫色描边已经足够表达「这些是搁着的」。 */
+.card.is-hold .ctitle{color:var(--ink2)}
+.card .chint{margin-top:5px;font-size:10.5px;color:var(--s-hold)}
+
+/* 就地编辑 */
+.card.editing{touch-action:auto;cursor:default;border-color:rgba(120,150,240,.75);background:var(--field-solid)}
+.card.editing .ctitle,.card.editing .cmeta,.card.editing .clink,.card.editing .del,.card.editing .chint,.card.editing .tick{display:none}
+.cedit{display:flex;flex-direction:column;gap:5px}
+.cedit input{
+  font:inherit;font-size:12.5px;color:var(--ink);width:100%;
+  border:1px solid var(--line);border-radius:6px;padding:4px 6px;background:var(--field-solid);outline:none;
+}
+/* ★ 备注是多行 <textarea>（v0.9.0）。用户原话「如果我要填写很多内容，修改起来会比较麻烦」——
+   「内容多」九成发生在备注上，而它此前是个单行 <input>，长备注只能横着爬。
+   默认 3 行、可手动往下拉高到 8 行；Enter 是换行，保存走 Ctrl/Cmd+Enter。 */
+.cedit textarea{
+  font:inherit;font-size:12.5px;color:var(--ink);width:100%;font-family:inherit;
+  border:1px solid var(--line);border-radius:6px;padding:4px 6px;background:var(--field-solid);outline:none;
+  resize:vertical;min-height:54px;max-height:132px;line-height:1.5;
+}
+.cedit textarea:focus{border-color:rgba(120,150,240,.75)}
+.cedit input:focus{border-color:rgba(120,150,240,.75)}
+/* 编辑卡里的项目下拉也换成自绘。宽度撑满整行，跟上面的日期框对齐
+   （原来这里是个原生 select，被挤成一个光秃秃的箭头，见 .two 那段注释）。 */
+.cedit .selbtn{
+  width:100%;max-width:none;background:var(--field-solid);color:var(--ink);
+  border:1px solid var(--line);border-radius:6px;
+  font-size:12px;padding:3px 5px;
+}
+/* 日期与项目：**纵向排开，各占整行**。
+   弹窗里一列只有 138px 宽，并排之后每个控件只剩 57px ——
+   而 <input type="date"> 至少要 ~70px 才显示得全「2026-09-14」，
+   并排的直接后果是日期被截断、项目下拉被挤成一个光秃秃的箭头（看不见选的是哪个项目）。
+   编辑态是临时的，多 30px 高远好过看不见。 */
+.cedit .two{display:grid;grid-template-columns:minmax(0,1fr);gap:5px}
+.cedit .two>*{min-width:0}
+.cedit .two input,.cedit .two .selbtn{font-size:12px;padding:3px 5px}
+
+/* ---------- 日期：点框内任何位置都能开日历 ----------
+   原生 <input type="date"> 只在**最右侧那个小图标**上响应点击，框里其他地方点了完全没反应。
+   对这么小的控件来说，等于「必须瞄准才能选日期」。
+   这里盖一层透明的满铺命中层，由它来调 showPicker() ——
+   顺便，它是个真实元素，测试能盯得住（伪元素 ::-webkit-calendar-picker-indicator 盯不住）。 */
+.cedit .datewrap{position:relative;display:block;min-width:0}
+.cedit .datehit{
+  position:absolute;inset:0;width:100%;border:0;background:transparent;
+  padding:0;cursor:pointer;border-radius:6px;
+}
+.cedit .datehit:focus-visible{outline:2px solid rgba(120,150,240,.7);outline-offset:1px}
+/* 有自己的命中层了，就把原生小图标藏掉，免得右边出现两个日历图标。
+   ★ 只对支持 showPicker() 的浏览器生效（js 会挂 html.has-showpicker），
+     不支持的整块退回原样 —— 藏了图标又没有替代入口，那才是真的点不动。 */
+html.has-showpicker .cedit .datewrap input[type="date"]{padding-right:24px;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%236a7282' stroke-width='1.4' stroke-linecap='round'><rect x='2.3' y='3.6' width='11.4' height='10.2' rx='2.2'/><path d='M2.3 6.6h11.4M5.6 2.3v2.6M10.4 2.3v2.6'/></svg>");
+  background-repeat:no-repeat;background-position:right 7px center;background-size:13px 13px;}
+html.has-showpicker .cedit .datewrap input[type="date"]::-webkit-calendar-picker-indicator{display:none}
+/* 三档优先级开关：三格等宽，选中那格浮起来。
+   用等宽 grid 而不是滑块 —— 只有 3 格，滑块那点位移在这里读不出「滑」的意思，
+   反而多一层绝对定位要跟 resize 对齐，白白多一个会错的东西。 */
+.cedit .pseg{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:2px;padding:2px;
+  background:var(--line2);border-radius:8px;
+}
+.cedit .pseg button{
+  border:0;background:transparent;font:inherit;font-size:11px;color:var(--ink2);
+  padding:4px 0;border-radius:6px;cursor:pointer;
+  transition:background .15s,color .15s,box-shadow .15s;
+}
+.cedit .pseg button:hover{color:var(--ink)}
+.cedit .pseg button.on{
+  background:var(--field-solid);color:var(--ink);font-weight:500;
+  box-shadow:0 1px 2px rgba(16,20,32,.13);
+}
+/* ★ 这里原来有一行 `.cedit .hint`：「回车或点别处都能保存」。
+   用户明确说「按回车或点击别处时都能保存，删除掉不需要的额外提示」—— 已整块删除。
+   编辑卡本身就是最小可见集合（标题 / 备注 / 日期 / 项目 / 优先级），
+   不要再把任何提示文字加回来。 */
+
+/* 拖拽中的浮起卡片 */
+/* ★ 这里才是真正该出现玻璃的地方：卡片已经脱离列、悬在整个看板上方，
+   它模糊的是底下所有列和留白 —— 不存在「和列的模糊打架」，效果也最明显。
+   参数取调研里的生产验证值：模糊 12~20px 读作玻璃（再高就成了雾），
+   saturate() 是让透过来的颜色不发灰的关键，1px 亮边 + inset 高光一起把边缘点亮。
+   ★ transform 里的 translateX 是**磁吸位移**（--magx 由 js 逐帧写），
+     缩放和位移必须在同一条 transform 上，两处分写会互相覆盖。
+     ★★★★★ v0.21.0：底色**只留 var(--card)**，原来是「tint 渐变 + --card」两层 ——
+       跟 .card 去色是同一个理由（拍板「透明磨砂，里面不要放颜色」）。
+       拖起来的**正是同一张卡**：留着它就会出现「拿起来有颜色、放下没颜色」的一跳，
+       而那一跳恰好发生在人盯着它的时候；何况 α 只有 .08，压在
+       blur(20px) saturate(180%) 上根本读不出「它来自哪一列」——
+       要传达那件事的是**目标列的描边与内发光**，不是这张卡自己的底色。
+     ★ 为什么保留 --card（近实底 .9）而不是跟 .card 一样改用 --lg-card：
+       它已脱离列、悬在整块看板上方，底下可能是任意内容，需要更实的底才读得清；
+       「拿起来 → 变实」本来就是「抬起」这件动作该有的材质语义。 */
+.card.dragging{
+  position:fixed;z-index:200;pointer-events:none;
+  -webkit-backdrop-filter:blur(20px) saturate(180%);
+  backdrop-filter:blur(20px) saturate(180%);
+  background:var(--card);
+  border-color:var(--line2);
+  box-shadow:var(--glass-hi),
+             0 18px 40px -12px rgba(16,20,32,.34),
+             0 4px 12px -4px rgba(16,20,32,.18);
+  transform:translateX(var(--magx,0px)) scale(1.03);
+}
+.ph{border:1px dashed var(--line);border-radius:var(--r-sm);pointer-events:none;flex:0 0 auto}
+
+/* ---------- 完成反馈（方案 B）----------
+   拖进「已完成」时播一次：落位回弹 → 绿勾描出 → 绿环脉冲 → 8 颗粒子散开。
+   全纯 CSS，零依赖、无 canvas —— MV3 默认 CSP 下不需要任何额外许可。
+   时序刻意交错（落位 0~340ms / 勾 100~400ms / 划掉 260~520ms / 粒子 0~560ms），
+   读起来才像「一件事的四个阶段」，四件事同时炸只会显得吵。 */
+@keyframes landB{0%{transform:scale(1.075)}38%{transform:scale(.978)}100%{transform:scale(1)}}
+/* 完成色环向外扩一圈再消失 —— 位移之外再补一个「扩散」信号。
+   只靠一个 1.045 的 scale 回弹太安静，几乎看不出来（这是「像没反应」的一半原因）。
+   ★★ v0.20.0：从绿改成灰紫。**这里是写死的 rgb 三元组，不跟 --s-done 走** ——
+     box-shadow 要带 alpha，而 --s-done 是六位 hex，拆不出 r/g/b。
+     （`rgb(from var(--s-done) r g b / .55)` 这种相对颜色 Chromium 119+ 才支持，
+      扩展要跑在别人的浏览器上，不为一个动画冒这个险。）
+     所以 —— **改 --s-done 的时候，这里必须手动跟着改**。 */
+@keyframes ringPop{
+  0%{box-shadow:0 0 0 0 rgba(142,136,184,.55)}
+  70%{box-shadow:0 0 0 8px rgba(142,136,184,0)}
+  100%{box-shadow:0 0 0 8px rgba(142,136,184,0)}
+}
+@keyframes tickDraw{from{stroke-dashoffset:26}to{stroke-dashoffset:0}}
+@keyframes sparkOut{
+  0%{transform:translate(-50%,-50%) scale(1);opacity:1}
+  70%{opacity:.85}
+  100%{transform:translate(calc(-50% + var(--dx)),calc(-50% + var(--dy))) scale(.3);opacity:0}
+}
+
+.card .tick{
+  position:absolute;top:4px;right:4px;width:13px;height:13px;
+  color:var(--s-done);pointer-events:none;opacity:0;
+}
+.card .tick path{stroke-dasharray:26;stroke-dashoffset:26}
+/* 已完成列常驻显示勾（不播动画）—— 一眼能看出这条是完成的，而不是靠透明度去猜。
+   刚完成的那张卡会带上 .ticked，走描边动画；动画结束 .ticked 撤掉后落到这条规则上，
+   勾保持显示，状态完全一致。 */
+.card.is-done .tick{opacity:1}
+.card.is-done:not(.ticked) .tick path{stroke-dashoffset:0}
+.card.ticked .tick{opacity:1}
+.card.ticked .tick path{animation:tickDraw .3s .1s ease forwards}
+
+.card.land-B{animation:landB .42s cubic-bezier(.32,.72,0,1) both,ringPop .62s ease-out both;z-index:3}
+/* ★ 已完成列的卡片整体压了 opacity:.72（「结束的东西退到后面去」）。刚完成那张要播反馈，
+   压着 0.72 看动画等于白播 —— 这里给足不透明度。选择器要比上面那条长才压得住。 */
+.col[data-status="done"] .card.land-B{opacity:1}
+
+/* ★ 这里原来有一条「标题从左往右画出来」的划掉线（.card.struck + strikeX）。
+   用户明确说「那个从左拉到右的进度栏可以删掉，不需要」—— 已整块移除。
+   完成反馈只剩：落位回弹 + 绿环脉冲 + 勾描出 + 粒子散开，四件事都保留。
+   不要再把它加回来。 */
+
+.card .spark{
+  position:absolute;left:50%;top:50%;width:var(--s,4px);height:var(--s,4px);
+  /* ★ v0.20.0：兜底色跟 --s-done 同源（灰紫）。粒子自己带 --c，这里是「万一没带上」的那一档。 */
+  border-radius:50%;background:var(--c,#8e88b8);pointer-events:none;
+  transform:translate(-50%,-50%);
+  animation:sparkOut var(--dur,560ms) cubic-bezier(.22,.61,.36,1) forwards;
+}
+
+/* 减少动态效果：不是「关掉反馈」，是换一种不动的表达 ——
+   勾直接出现、划掉直接画上。信息一点没少，只是没有位移。 */
+/* 减少动态效果：磁吸的位移与缩放一并去掉。
+   它虽然是「跟着指针的实时状态」而不是一次性动画，但对前庭敏感的人来说，
+   卡片不跟手地自己漂移恰恰是最难受的一类 —— 这里保留列的描边与内发光，
+   吸力照样读得到，只是没有位移。 */
+@media (prefers-reduced-motion:reduce){
+  .col.drop-target{transform:none}
+  .rail.drop-target{transform:none}
+  .card.dragging{transform:none}
+  .card.land-B{animation:none}
+  .card .spark{display:none}
+  .card.ticked .tick path{animation:none;stroke-dashoffset:0}
+}
+
+/* ---------- 底栏 ---------- */
+.foot{
+  flex:0 0 auto;display:flex;align-items:center;gap:8px;
+  padding:0 14px 11px;font-size:11.5px;color:var(--ink3);
+}
+.foot .hold-stat{color:#8b7aa3}
+/* 「本周完成 N 件」（v0.9.0）—— 补上竞品调研六段结构里唯一空着的「回顾」段。
+   配色和「已挂起」同一档：都是次要信息，不该和左边的主计数抢注意力。 */
+.foot .week-stat{color:#6f7f8f}
+/* 同步状态：嵌在底栏里，不另起面板 —— 底栏本来就是「一行说清现状」的地方 */
+.foot .synced{
+  display:inline-flex;align-items:center;gap:5px;color:var(--ink3);
+  cursor:pointer;border:0;background:transparent;font:inherit;padding:0;
+}
+.foot .synced:hover{color:var(--ink2)}
+.foot .synced .dot{width:6px;height:6px;border-radius:50%;background:#b9bec7;flex:0 0 auto}
+.foot .synced.s-ok .dot{background:var(--s-done)}
+.foot .synced.s-run .dot{background:var(--s-doing)}
+.foot .synced.s-err .dot{background:#c05a6a}
+.foot .link{
+  border:0;background:transparent;color:var(--ink3);font:inherit;font-size:11.5px;
+  text-decoration:underline;text-underline-offset:2px;cursor:pointer;padding:0;
+}
+.foot .link:hover{color:var(--ink2)}
+
+/* ---------- 轻提示 ---------- */
+.toast{
+  position:fixed;left:50%;bottom:40px;z-index:500;
+  max-width:440px;padding:7px 15px;border-radius:16px;
+  background:var(--toast-bg);color:var(--toast-ink);font-size:12px;text-align:center;
+  -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
+  box-shadow:0 8px 22px rgba(20,24,35,.24);
+  opacity:0;transform:translateX(-50%) translateY(6px);
+  transition:opacity .16s,transform .16s;pointer-events:none;
+}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* ---------- 搜索（v0.8.0）----------
+   搜索行复用捕获行那一格：不新增任何常驻控件，用完就退回捕获行。
+   「搜的时候看不到输入框在哪」是这类功能的头号问题，所以进搜索必自动聚焦 + 全选。 */
+.searchrow{gap:8px;align-items:center}
+.searchrow input{flex:1 1 auto;min-width:0}
+.searchrow .hitcount{flex:0 0 auto;font-size:11.5px;color:var(--ink3);white-space:nowrap}
+mark{background:var(--warn-line);color:inherit;border-radius:3px;padding:0 1px}
+/* 命中在备注里时，卡片上补一行备注片段（否则用户看不出「为什么这条被搜出来了」） */
+.card .nhit{margin-top:4px;font-size:11px;color:var(--ink3);line-height:1.4;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.card .nhit mark{background:var(--warn-line)}
+
+/* ---------- 快速改期（v0.8.0）----------
+   hover 才出现的日历按钮放在卡片右下角（×在右上角），只占一行小字右侧的留白，
+   不动标题的排版 —— 标题宽度是 138px 窄列的稀缺资源，不能为了个偶发操作常年让位。 */
+.card .qdate{
+  position:absolute;bottom:5px;right:5px;width:16px;height:16px;
+  border:0;background:transparent;color:var(--ink4);border-radius:4px;
+  cursor:pointer;opacity:0;transition:opacity .12s,color .12s;padding:0;
+  display:flex;align-items:center;justify-content:center;
+}
+.card:hover .qdate{opacity:1}
+.card .qdate:hover{color:#5b7fa6;background:var(--field-solid)}
+.card:hover .cmeta .txt{padding-right:18px}
+/* 挂起浮层里的卡不参与拖拽排序，日历按钮收起来；那边改成直接点日期文字 */
+#holdFly .card .qdate{display:none}
+/* 「按项目」视图和挂起浮层里日期本来就写在卡片上 —— 那就让它本身可以点 */
+.card .datelink{cursor:pointer;border-bottom:1px dashed var(--line)}
+.card .datelink:hover{color:#5b7fa6;border-bottom-color:rgba(91,127,166,.8)}
+
+/* 快捷改期浮层：挂在 body 下 + fixed。
+   ★ 不能留在列里 —— .col / .holdfly 上有 backdrop-filter，那会成为 fixed 后代的包含块，
+     坐标会以列为原点算，浮层会飞到别处。 */
+.qpop{
+  position:fixed;z-index:400;display:flex;gap:2px;padding:3px;border-radius:11px;
+  background:var(--card);border:1px solid var(--line);
+  box-shadow:0 8px 20px rgba(16,20,32,.16);
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+}
+.qpop button{
+  border:0;background:transparent;font:inherit;font-size:11.5px;color:var(--ink2);
+  padding:4px 7px;border-radius:8px;cursor:pointer;white-space:nowrap;
+}
+.qpop button:hover{background:rgba(90,125,220,.12);color:var(--ink)}
+.qpop button.on{background:rgba(90,125,220,.16);color:var(--ink);font-weight:500}
+
+/* ---------- 底栏的「恢复归档」与 toast 的「撤销」----------
+   两者都只在有东西可恢复时出现（render 里控制 hidden），不是常驻控件。 */
+.foot .link.act{color:#5b7fa6}
+.toast{display:flex;align-items:center;gap:10px;justify-content:center}
+.toast .undo{
+  pointer-events:auto;flex:0 0 auto;border:0;border-radius:9px;cursor:pointer;
+  background:var(--toast-chip);color:var(--toast-ink);font:inherit;font-size:11.5px;
+  padding:3px 9px;
+}
+.toast .undo:hover{background:var(--toast-chip-hover)}
+
+/* ---------- 编辑抽屉（v0.9.1）----------
+   就地编辑（.cedit）住在一列里，可用宽度只有约 138px，字段一多就挤成一条 ——
+   这正是「要填很多内容、改起来比较麻烦」的根因。抽屉给的是整幅宽度 + 整块高度：
+   标题 / 备注 / 日期 / 项目 / 优先级 / 状态一次全在，不用来回点。
+   ★ 抽屉**不做玻璃**：它盖在看板上，而看板本身是玻璃卡，玻璃叠玻璃会把底下透成
+     一片脏灰、两条边界一起糊掉（拖拽浮卡那次已经栽过一回）。这里用近实色 + 一道
+     上边描边把层级讲清楚，比再加一层模糊干净得多。 */
+.dveil{
+  position:absolute;inset:0;z-index:340;cursor:pointer;
+  background:rgba(23,24,28,.15);opacity:0;transition:opacity .2s;
+}
+.dveil.show{opacity:1}
+.drawer{
+  position:absolute;left:0;right:0;bottom:0;z-index:350;
+  max-height:84%;display:flex;flex-direction:column;
+  border-radius:14px 14px 0 0;
+  background:var(--card);
+  box-shadow:0 -16px 44px -14px rgba(16,20,32,.36),var(--glass-hi);
+  transform:translateY(101%);
+  transition:transform .26s cubic-bezier(.32,.72,0,1);
+}
+.drawer.show{transform:none}
+/* 顶部那道「抓手」不承担任何功能，只是告诉眼睛「这是可以收起来的一层」 */
+.drawer::before{
+  content:"";position:absolute;left:50%;top:6px;width:34px;height:3px;margin-left:-17px;
+  border-radius:2px;background:var(--line2);
+}
+/* 抽屉自带滚动的只有 .dbody —— 头尾固定，滚的时候「收起 / 保存状态」一直在视野里 */
+.drawer .dhead{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:15px 14px 7px}
+.drawer .dname{font-size:12.5px;font-weight:500;color:var(--ink)}
+.drawer .dstate{font-size:11px;color:var(--ink3);opacity:0;transition:opacity .2s}
+.drawer .dstate.on{opacity:1}
+.drawer .dhead .x{margin-left:auto}
+.drawer .dbody{
+  flex:1 1 auto;min-height:0;overflow-y:auto;padding:2px 14px 6px;
+  display:flex;flex-direction:column;gap:7px;
+}
+.drawer textarea{
+  font:inherit;font-size:12.5px;font-family:inherit;color:var(--ink);width:100%;
+  border:1px solid var(--line);border-radius:8px;padding:7px 9px;
+  background:var(--field-solid);outline:none;resize:none;line-height:1.5;overflow:hidden;
+  transition:border-color .15s;
+}
+.drawer textarea:focus{border-color:rgba(120,150,240,.75)}
+.drawer #dTitle{font-size:13.5px;font-weight:500}
+/* 备注在抽屉里能给到 196px（就地编辑只有 132px）——空间够，就不急着让人滚 */
+.drawer #dNote{min-height:74px;max-height:196px;overflow-y:auto}
+.drawer .drow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:7px}
+.drawer .drow>*{min-width:0}
+.drawer .datewrap{position:relative;display:block;min-width:0}
+.drawer .datewrap input[type="date"]{
+  font:inherit;font-size:12px;color:var(--ink);width:100%;background:var(--field-solid);outline:none;
+  border:1px solid var(--line);border-radius:8px;padding:6px 8px;
+}
+.drawer .datewrap input[type="date"]:focus{border-color:rgba(120,150,240,.75)}
+/* 满铺命中层：原生 <input type="date"> 只在最右侧那个小图标上响应点击，
+   框里其他地方点了没反应 —— 对这么小的控件等于「必须瞄准」（和 .cedit 同一处坑）。 */
+.drawer .datehit{
+  position:absolute;inset:0;width:100%;border:0;background:transparent;
+  padding:0;cursor:pointer;border-radius:8px;
+}
+.drawer .datehit:focus-visible{outline:2px solid rgba(120,150,240,.7);outline-offset:1px}
+html.has-showpicker .drawer .datewrap input[type="date"]{padding-right:26px;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%236a7282' stroke-width='1.4' stroke-linecap='round'><rect x='2.3' y='3.6' width='11.4' height='10.2' rx='2.2'/><path d='M2.3 6.6h11.4M5.6 2.3v2.6M10.4 2.3v2.6'/></svg>");
+  background-repeat:no-repeat;background-position:right 9px center;background-size:13px 13px;}
+html.has-showpicker .drawer .datewrap input[type="date"]::-webkit-calendar-picker-indicator{display:none}
+.drawer .selbtn{
+  width:100%;max-width:none;background:var(--field-solid);color:var(--ink);
+  border:1px solid var(--line);border-radius:8px;font-size:12px;padding:6px 8px;
+}
+/* 抽屉里的三档控件比就地编辑那版大一档（点得准）。
+   ★ 不把 .cedit .pseg 提成通用 .pseg：那条规则被静态校验和打包门槛双双盯着
+     （`".cedit .pseg" in ph`），改选择器会连带动两处门槛，收益却只是少写 4 行。 */
+.drawer .pseg{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:2px;padding:2px;
+  background:var(--line2);border-radius:9px;
+}
+.drawer .pseg button{
+  border:0;background:transparent;font:inherit;font-size:11.5px;color:var(--ink2);
+  padding:6px 0;border-radius:7px;cursor:pointer;transition:background .15s,color .15s,box-shadow .15s;
+}
+.drawer .pseg button:hover{color:var(--ink)}
+.drawer .pseg button.on{background:var(--field-solid);color:var(--ink);font-weight:500;box-shadow:0 1px 2px rgba(16,20,32,.13)}
+/* 只读元信息（建于 / 完成于）。放在最底下，小字、后退 —— 它是参考不是操作。 */
+.drawer .dmeta{font-size:11px;color:var(--ink3);line-height:1.6;padding:1px 1px 0}
+.drawer .dfoot{
+  flex:0 0 auto;display:flex;align-items:center;gap:8px;
+  padding:9px 14px 12px;border-top:1px solid var(--line2);
+}
+.drawer .dbtn{
+  font:inherit;font-size:12px;color:var(--ink2);cursor:pointer;
+  border:1px solid var(--line);border-radius:8px;
+  padding:5px 12px;background:var(--field-solid);transition:color .15s,background .15s,border-color .15s;
+}
+.drawer .dbtn:hover{color:var(--ink);background:var(--field-solid)}
+.drawer .dbtn.gone:hover{color:#c04a5e;border-color:rgba(192,74,94,.4);background:var(--danger-bg)}
+.drawer .dbtn.good{
+  background:var(--solid);color:var(--solid-ink);border-color:var(--solid);
+}
+.drawer .dbtn.good:hover{background:var(--solid-hover);color:var(--solid-ink);border-color:var(--solid-hover)}
+@media (prefers-reduced-motion:reduce){
+  .drawer{transition:none;transform:none}
+  .dveil{transition:none}
+}
+
+/* ---------- 自然语言预览条（v0.9.1）----------
+   在「记一笔」里写「明天交周报 #工作 !高」，这里把**解析结果**实时摆出来。
+   为什么非要有这一条：解析是猜的，猜错时如果界面上什么都不说，用户只有两种下场 ——
+   要么被静默改错（下次打开发现日期不对），要么再也不敢用这个语法。预览把「猜」
+   变成「看得见的一步」，猜错了当场就能改字。 */
+.nlpbar{
+  flex:0 0 auto;display:flex;align-items:center;gap:5px;flex-wrap:wrap;
+  padding:0 12px 8px;margin-top:-4px;font-size:11px;color:var(--ink3);
+}
+.nlpbar .nlpc{
+  display:inline-flex;align-items:center;gap:4px;white-space:nowrap;
+  padding:2px 7px;border-radius:7px;
+  background:rgba(90,125,220,.1);border:1px solid rgba(90,125,220,.18);color:var(--ink2);
+}
+.nlpbar .nlpc.k-proj{background:rgba(79,138,125,.1);border-color:rgba(79,138,125,.2)}
+.nlpbar .nlpc.k-pri{background:rgba(176,122,90,.11);border-color:rgba(176,122,90,.2)}
+.nlpbar .nlpc b{font-weight:500;color:var(--ink)}
+
+/* 「标签 + 三档」两行。标签给固定 38px：「状态」和「优先级」两个字宽度不同，
+   不固定的话两行控件的左边界会错开一格，看着就像没对齐。 */
+.drawer .dseg2{display:grid;grid-template-columns:38px minmax(0,1fr);gap:8px;align-items:center}
+.drawer .dseg2 .lb{font-size:11px;color:var(--ink3)}
+
+/* 卡片右下角的「展开」按钮（hover 出现），和日历并列。
+   它就是编辑抽屉的**看得见的入口** —— 只有键盘快捷键的入口等于没有入口。 */
+.card .dexp{
+  position:absolute;bottom:5px;right:23px;width:16px;height:16px;
+  border:0;background:transparent;color:var(--ink4);border-radius:4px;
+  cursor:pointer;opacity:0;transition:opacity .12s,color .12s;padding:0;
+  display:flex;align-items:center;justify-content:center;
+}
+.card:hover .dexp{opacity:1}
+.card .dexp:hover{color:#5b7fa6;background:var(--field-solid)}
+/* 右下角现在有两个图标（展开 + 改期），日期那行小字要让出 34px 而不是 18px。
+   ★ 这个数字必须跟着图标个数走：让少了，hover 时日期文字会钻到按钮底下。 */
+.card:hover .cmeta .txt{padding-right:34px}
+/* 就地编辑时卡片里已经是输入控件，展开按钮留着只会盖在输入框上 */
+.card.editing .dexp,.card.editing .qdate{display:none}
+#holdFly .card .dexp,#archFly .card .dexp{display:none}
+
+/* 就地编辑卡底部的「展开到大编辑」。
+   ★ 这是编辑抽屉最自然的入口：用户已经在改，改到一半发现「这框太小」的那一刻，
+     这条链接正好在眼前。另外两个入口（卡片 hover 图标、键盘 e）负责「一开始就想大改」。 */
+.cedit .cexp{
+  align-self:flex-end;border:0;background:transparent;padding:1px 4px;margin-top:-1px;
+  font:inherit;font-size:11px;color:#5b7fa6;cursor:pointer;border-radius:5px;
+}
+.cedit .cexp:hover{background:rgba(90,125,220,.12)}
+
+/* ---------- 主题开关（v0.18.0）----------
+   ★ 弹窗里它**不悬浮**：560px 宽，右上角已经被「搜索 / 数据」占着，
+     固定定位的开关会直接压在那两个按钮上。这里改成跟着 .bar 排（一个 flex 项），
+     位置在「数据」右边 —— 仍然是这一屏的右上角，只是不重叠。 */
+.bar .tsw{position:relative;top:auto;right:auto;flex:0 0 auto;width:52px;height:26px}
+.bar .tsw .tsw-kn{top:3px;left:3px;width:20px;height:20px}
+.bar .tsw .tsw-bg{padding:0 6px}
+/* 52 - 20 - 3*2 = 26 */
+html[data-theme="dark"] .bar .tsw .tsw-kn{transform:translateX(26px)}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <div class="bar">
+    <div class="seg glass" id="seg">
+      <span class="seg-thumb" id="segThumb"></span>
+      <button data-view="today" class="on">今天</button>
+      <button data-view="date">按日期</button>
+      <button data-view="project">按项目</button>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn-ghost glass" id="btnSearch" title="搜索标题或备注（/ 或 Ctrl+F）">搜索</button>
+    <button class="btn-ghost glass" id="btnData" title="项目设置、导出导入、使用说明">数据</button>
+    <!-- 主题开关（v0.18.0）。★ 和管理页共用同一个偏好键，切一次两边都变。
+         ★ 图标分两处：胶囊里那对是「目标提示」（点一下会变成什么），
+           钮里那个是「当前状态」—— 一个控件同时说清「现在」和「下一步」。 -->
+    <button class="tsw" id="themeSw" type="button" role="switch" aria-checked="false"
+            aria-label="当前是亮色，点一下切到暗色" title="切到暗色">
+      <span class="tsw-bg" aria-hidden="true">
+        <svg class="tsw-sun" viewBox="0 0 24 24" width="13" height="13">
+          <circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/>
+          <path d="M12 2.4v2.3M12 19.3v2.3M2.4 12h2.3M19.3 12h2.3M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6"
+                fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        <svg class="tsw-moon" viewBox="0 0 24 24" width="13" height="13">
+          <path d="M20.4 14.8A8.4 8.4 0 0 1 9.2 3.6 8.8 8.8 0 1 0 20.4 14.8z"
+                fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <span class="tsw-kn" aria-hidden="true">
+        <svg class="tsw-ksun" viewBox="0 0 24 24" width="12" height="12">
+          <circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/>
+          <path d="M12 2.4v2.3M12 19.3v2.3M2.4 12h2.3M19.3 12h2.3M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6"
+                fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        <svg class="tsw-kmoon" viewBox="0 0 24 24" width="12" height="12">
+          <path d="M20.4 14.8A8.4 8.4 0 0 1 9.2 3.6 8.8 8.8 0 1 0 20.4 14.8z"
+                fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+        </svg>
+      </span>
+    </button>
+  </div>
+
+
+  <div class="composer" id="composerRow">
+    <input id="newTitle" class="glass" placeholder="记一笔，回车创建（可写「明天交周报 #工作 !高」）" autocomplete="off">
+    <!-- ★ 这里原来是 <select id="newProject">。原生下拉的选项列表由操作系统绘制，
+         CSS 完全碰不到，做不出「下滑展开 + 玻璃磨砂」—— 换成自绘按钮 + .selpop 浮层。 -->
+    <button type="button" id="newProject" class="selbtn glass"
+            title="任务归到哪个项目" aria-haspopup="listbox" aria-expanded="false">
+      <span class="seltxt"></span><i class="chev"></i>
+    </button>
+  </div>
+
+  <!-- 自然语言解析预览（v0.9.1）。空的时候整条 hidden，不占版面。
+       换行请用 shift+回车或直接敲；这里只负责「让你看见解析成了什么」。 -->
+  <div class="nlpbar" id="nlpBar" hidden></div>
+
+  <div class="composer searchrow" id="searchRow" hidden>
+    <input id="searchInput" class="glass" placeholder="搜索标题或备注，Esc 退出" autocomplete="off">
+    <span class="hitcount" id="hitCount"></span>
+  </div>
+
+  <div class="board" id="board">
+    <section class="col glass" data-status="todo">
+      <div class="col-head"><i class="sdot"></i><span class="name">待办</span><span class="count">0</span></div>
+      <div class="col-body" data-status="todo"></div>
+    </section>
+    <section class="col glass" data-status="doing">
+      <div class="col-head"><i class="sdot"></i><span class="name">进行中</span><span class="count">0</span></div>
+      <div class="col-body" data-status="doing"></div>
+    </section>
+    <section class="col glass" data-status="done">
+      <div class="col-head"><i class="sdot"></i><span class="name">已完成</span><span class="count">0</span></div>
+      <div class="col-body" data-status="done"></div>
+    </section>
+    <button class="rail glass" id="holdRail" data-status="hold" title="挂起：暂时不做，但没放弃">
+      <i class="sdot"></i>
+      <span class="rail-name">挂起</span>
+      <span class="rail-count" id="holdCount">0</span>
+    </button>
+
+    <div class="holdfly" id="holdFly" hidden>
+      <div class="holdfly-head">
+        <i class="sdot"></i>
+        <span class="name">已挂起</span>
+        <span class="count" id="holdFlyCount">0</span>
+      </div>
+      <div class="holdfly-body" id="holdFlyBody"></div>
+    </div>
+
+    <div class="archfly" id="archFly" hidden>
+      <div class="archfly-head">
+        <i class="sdot"></i>
+        <span class="name">已归档</span>
+        <span class="count" id="archFlyN"></span>
+        <button class="x" id="archClose" title="收起">×</button>
+      </div>
+      <div class="archfly-body" id="archFlyBody"></div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span id="stat"></span>
+    <span class="hold-stat" id="holdStat" hidden></span>
+    <span class="week-stat" id="weekStat" hidden></span>
+    <button class="synced" id="syncInd" hidden><span class="dot"></span><span id="syncTxt"></span></button>
+    <div class="spacer"></div>
+    <button class="link act" id="archBtn" hidden>归档</button>
+    <button class="link" id="clearDone" title="把已完成的收起来：不再占着已完成列，数据仍在本地（可逐条取回）">归档已完成</button>
+  </div>
+
+<!-- ===== 编辑抽屉（v0.9.1）=====
+     为什么要有第二套编辑界面：就地编辑受限于列宽（约 138px），字段一多就变成竖向挤一条。
+     抽屉负责「认真改一条」，就地编辑继续负责「顺手改个标题」—— 两条路都留着，
+     不是替换关系。打开入口有三处：卡片右下角的展开按钮（hover 出现）、双击卡片、键盘 e。
+     ★ 位置：挂在 .app 里（.app 是 position:relative、自带 overflow:hidden），
+       不做 fixed —— 弹窗里 fixed 会被带 backdrop-filter 的祖先劫持包含块。
+     ★ 出场走 nextFrame（rAF + 48ms 兜底），别用裸 rAF：窗口被遮挡时 rAF 会被节流，
+       浮层会停在 opacity:0 且点不动，表现是「点了没反应」而且不报错。 -->
+<div class="dveil" id="dVeil" hidden></div>
+<div class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="编辑任务" hidden>
+  <div class="dhead">
+    <span class="dname">编辑任务</span>
+    <span class="dstate" id="dState"></span>
+    <button class="x" id="dClose" title="收起（Esc）">×</button>
+  </div>
+  <div class="dbody">
+    <textarea id="dTitle" rows="1" placeholder="任务标题" maxlength="300"></textarea>
+    <textarea id="dNote" rows="3" placeholder="备注，框会跟着内容长高"></textarea>
+    <div class="drow">
+      <div class="datewrap">
+        <input type="date" id="dDate" title="计划日期">
+        <button type="button" class="datehit" id="dDateHit" title="选择日期" aria-label="选择日期"></button>
+      </div>
+      <button type="button" id="dProject" class="selbtn" title="所属项目"
+              aria-haspopup="listbox" aria-expanded="false"><span class="seltxt"></span><i class="chev"></i></button>
+    </div>
+    <div class="dseg2"><span class="lb">状态</span><div class="pseg" id="dSeg"></div></div>
+    <div class="dseg2"><span class="lb">优先级</span><div class="pseg" id="dPseg"></div></div>
+    <div class="dmeta" id="dMeta"></div>
+  </div>
+  <div class="dfoot">
+    <button type="button" class="dbtn gone" id="dDel">删除</button>
+    <div class="spacer"></div>
+    <button type="button" class="dbtn good" id="dClose2">收起</button>
+  </div>
+</div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="ai.js"></script>
+<script src="feishu.js"></script>
+<script src="sync.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>

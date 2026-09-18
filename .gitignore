@@ -1,0 +1,23 @@
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 打包产物与日志
+*.zip
+*.crx
+*.pem
+*.log
+
+# Python（工具链跟着目录走时会生成）
+__pycache__/
+*.pyc
+
+# ★ 私钥与签名材料 —— 绝不入库
+key.b64
+_extension-key/

@@ -1,0 +1,584 @@
+/* theme.css —— 亮 / 暗主题（v0.20.0）
+ *
+ * 四件事：① 亮色下补的共用变量  ② 暗色下整套变量覆盖  ③ 右上角那个开关的样式和动画
+ *         ④ Liquid Glass 材质令牌（v0.19.0 新增，见 :root 末尾那一大块）
+ * ★★ v0.19.0 那句最要紧的话：**一个区域里只允许一层玻璃**。
+ *    这条规则本轮换了个方向执行 —— 以前玻璃在「列」上、卡片是不透明的；
+ *    现在反过来：列退成透明容器，卡片接管玻璃。原因见 popup.html 里
+ *    `.col.glass` 与 `.card` 两处注释（玻璃叠玻璃会让卡片发灰发浑、状态色一起脏）。
+ *
+ * ★★ 为什么暗色只用一套选择器 `html[data-theme="dark"]`，而不是再加一段
+ *    `@media (prefers-color-scheme: dark)`：
+ *    两处写就会有两套变量组，改一个色要改两个地方，迟早只改一处。
+ *    而且「用户点过没有」这件事 CSS 判断不了（它只看 data-theme），
+ *    真正决定主题的是 theme.js —— CSS 只管**执行**，不管**决策**。
+ *    所以初始值由 theme.js 在首帧前写好（跟系统走或跟用户走），CSS 只认属性。
+ *
+ * ★ 特异性：`html[data-theme="dark"]`（0,1,1）压得住各页面的 `:root`（0,1,0），
+ *   所以这个文件放在页面的 <style> 之前或之后都能赢。仍然建议放前面，
+ *   方便「页面自己的专有变量」在语义上压在上面。
+ *
+ * ★ 不在这里覆盖 body 的 background：两个页面的底完全不同
+ *   （manage 是四段柔和晕染，popup 是一整块纯面板），
+ *   在这里统一覆盖会把 manage 那四段渐变整个打掉。
+ *   所以底色由各页面自己用 var(--bg-1..4) 拼 —— 这个文件只提供变量。
+ */
+
+/* ---------- ① 亮色：补上「原来硬编码在各页面里」的那几个 ---------- */
+:root{
+  /* 页面底色四件套。★ v0.18.0 之前 manage 的 body 里写死了四个字面量 ——
+     硬编码一个 #fff 就等于在暗色下留一块白斑，而且这种斑**只在暗色下可见**，
+     写的时候根本看不见。
+     ★★ v0.20.0：四支从「蓝灰 / 紫灰 / 绿灰 / 中性灰」收成**同一支中性浅灰的四个近邻**
+     （三通道极差 3 / 4 / 4 / 2，门要求 ≤24）。理由：页面底色不该参与配色，
+     它只需要「白得刚好」；颜色交给上面那层 --glow-* 光晕，两层各司其职。 */
+  --bg-1:#f4f5f7; --bg-2:#f5f4f8; --bg-3:#f4f4f8; --bg-4:#f6f6f8;
+  /* 开关胶囊的底色：亮色是「晨光」——偏白偏暖的一点蓝 */
+  --sw-a:#dfe8f8; --sw-b:#f4f6fc;
+  --sw-kn:#ffffff;            /* 钮底 */
+  --sw-kn-ink:#e0902f;        /* 钮里的图标色（太阳 → 暖橙） */
+  --sw-shadow:0 1px 3px rgba(16,20,32,.10);
+
+  /* ---------- 「小实底」和「实心块」（v0.18.0 主题化第二批）----------
+     ★★ 这一批最要命的是实心块。原来写的是
+        `background:var(--ink);color:#fff`（主按钮、导航选中项都是）。
+        暗色下 --ink 变成浅色 → 白字压浅底，**按钮上的字彻底消失**。
+        所以底和字必须**成对**变量化，不能只把底色换掉。
+     ★ --field 不复用 --glass：--glass 是玻璃面板的底（暗色下只有 .055），
+       输入框用它会淡到看不见。--field 是「浮在玻璃之上的一层实面」，得单独给值。 */
+  --line-hi:rgba(255,255,255,.78);          /* 玻璃的高光边 */
+  /* ---------- 「页面自己的 :root 里缺的那几把」（v0.18.0 修）----------
+     ★★ 这五个是**从消费侧**才发现的：popup.html 里 36 处 var() 全在引用它们，
+        而亮色块从来没定义。后果不是"用了默认值"，是 background / border 这类
+        简写**整条回退到 initial** —— 卡片没有底、浮层透明、边框全没、滚动条没色。
+     ★ 暗色块里反而一个不缺，因为加暗色时是照着「暗底上要改哪些」逐条列的；
+        天然的漏法正好是反过来：亮色这边没人列。
+     ★ 值是**从 v0.17.0 写死的字面量搬回来的**（变量化是纯搬运，不许顺手改数值）。
+        一个变量在多个构件上原有多个接近而不等的值（--card 就有
+        .62/.72/.86/.88/.9/.96/.99 七个），这里取**最主要那个构件**的值；
+        层次感改由各构件自己的描边与阴影承担，不再靠 0.0x 的不透明度差。 */
+  --card:rgba(255,255,255,.9);      /* 卡片底（原来写死在 .card 里） */
+  --glass:rgba(255,255,255,.55);    /* 通用玻璃面板（原来写死在 .glass 里） */
+  --ink4:#b7bcc5;                   /* 第四级文字：空态文案 / 卡片角上的小按钮 */
+  /* ★ 交互强调色（链接 / 可点文字）。亮色块原来**缺这一条** —— 它只在暗色块里定义过，
+     谁在亮色下用 var(--accent)，整条声明就回退到 initial。值取自 .card .clink
+     原本写死的 #4a72e8（**纯搬运**，不是顺手调色）。
+     ★ 它与 --s-doing 恰好同值但**不是同一个令牌**：--s-doing 是「进行中」这个列的语义，
+     --accent 是「可交互」的语义。以后改列配色不该连带改掉链接色。 */
+  --accent:#6c5fd1;
+  --line:rgba(160,172,192,.5);      /* 通用描边：输入框 / 按钮 / 占位虚线 */
+  --line2:rgba(160,172,192,.18);    /* 更淡的一档：分隔线 / 抽屉抓手 */
+  --field:rgba(255,255,255,.58);            /* 输入面常态（半透明实面）★ v0.19.0：.72 在那个浅底上是纯白块，跟玻璃语言不搭 */
+  --field-solid:#ffffff;                    /* 聚焦 / 悬停时更实的那一档；浮层实底 */
+  --solid:#3f4653;                          /* 实心块：主按钮、选中项 */
+  --solid-hover:#2b313c;
+  --solid-ink:#ffffff;                      /* 实心块上的字（必须跟底成对改） */
+  --solid-ink-dim:rgba(255,255,255,.55);    /* 实心块上的次要字 */
+  --toast-bg:rgba(28,30,36,.9); --toast-ink:#ffffff;
+  --toast-chip:rgba(255,255,255,.18); --toast-chip-hover:rgba(255,255,255,.3);
+  --danger-bg:rgba(253,241,243,.95);
+  --warn-bg:rgba(250,242,232,.62); --warn-ink:#8f5218; --warn-line:rgba(176,103,42,.24);
+
+  /* ★ v0.21.0：卡片右上角状态点（三档里的两档）。
+     橙＝「今天到期」（提醒）／红＝「已过期」（既成事实）。两者**不会同时出现在一张卡上**
+     （一张卡只有一个日期），所以不怕色相差只有 40°。
+     ★ 不要复用 --warn-ink（#8f5218 太深，7px 的点会读成一粒黑）或 --pri-high
+       （#e08a95 太淡，做点不醒目）—— 点色和文字色不是同一件事。
+     · --dot-halo 是「声波环」：7px 红点在小卡片上只是一粒颜色，
+       套一圈才读得出「响铃」这个动作。 */
+  --dot-due:#c07a4a; --dot-late:#c04a5e; --dot-halo:rgba(192,74,94,.20);
+  --blue-bg:rgba(238,243,255,.85); --blue-bg-hover:rgba(227,234,255,.95); --blue-ink:#3d5aa8;
+
+  /* 优先级三档的「亮度」（v0.18.0 修：从 popup.html 的 :root 搬过来）。
+     ★ 为什么必须搬：只写在 popup 自己的 :root 里，暗色块就**看不见它** ——
+       加暗色时人对着暗色块逐条覆盖，那份清单里没有 --p-*，于是漏了，
+       高优先级标题在暗底上成了近黑色（对比度 1.16:1）。搬进本文件之后，
+       「暗色块必须覆盖亮色块每个键」那条门才管得住它。
+     ★ 只用文字深浅 + 字重表达，不占色相 —— 色相预算已经分给状态色和项目色点了。
+     ★ 亮度最多撑 3 档：可用区间约 13:1 → 4.5:1，分 4 档每档只差约 1.3 倍，
+       肉眼分不出；3 档能拉开约 2 倍，层级才读得出来。
+     ★ 最低档（默认档）对卡片底色实测仍约 4.9:1，高于 WCAG 正文要求的 4.5:1。
+       再淡就成了「看不清」而不是「次要」—— 那是两回事。 */
+  --p-high:#101216; --p-mid:#3f4653; --p-low:#626a78;
+
+  /* ================= Liquid Glass 材质令牌（v0.19.0）=================
+     ★★ 为什么要另起 --lg- / --liq- / --glow- 三组前缀，而不复用 --glass / --card：
+        · --card 在 manage 里是**浮层实底**（#ffffff）—— 它必须不透明才盖得住内容；
+          而卡片玻璃底要半透明。同一个键背两个相反的语义，改一个必砸另一个。
+        · 这正是本仓库反复栽的那类坑：「一个变量多处消费，改值会波及无关构件」
+          （活例子：--r-sm 同时喂着按钮和卡片，直接把值调大会让全站按钮变胶囊）。
+        · 代价只是多几个键，收益是每个键只有一个语义、改它不会连坐。
+     ★ 令牌**必须两态齐全**：_validate.py 13f 那条门比的是「亮色定义过的键，
+       暗色块里必须覆盖」。漏一个不会报错，只会在暗色下变成
+       「一块只有亮色可见的斑」—— 写的时候根本看不见，这是最坏的形态。
+     ★ 颗粒噪点用 SVG feTurbulence 的 data URI。合规依据（官方文档核实过）：
+       MV3 只锁 script-src / object-src / worker-src，取值仅限
+       'self' / 'none' / 'wasm-unsafe-eval'；**img-src 与 style-src 默认不设限**
+       —— 官方示例里反倒要你主动加 `img-src 'self'` 才能把图片锁进包。
+       所以 CSS 背景图走 data: 是允许的。 */
+
+  /* 颗粒噪点图（中性纹理，不随主题变色；暗色块里也写一遍，见上面「两态齐全」） */
+  --grain:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+
+  /* 颗粒强度。★ 这是「有质感」与「脏」之间那根线：
+     低于 .12 等于没加（画面立刻回到廉价塑料渐变），高于 .34 开始起灰。
+     暗色下要比亮色**更低**：暗底会放大 overlay 混合里噪声的亮度贡献。 */
+  --grain-a:.30;
+
+  /* 玻璃本体的模糊与饱和（.glass 消费）。
+     ★ saturate 必须大于 100%：玻璃的「贵」主要来自它把下层颜色**提纯**了。
+       只做模糊不做提纯，出来的是雾，不是玻璃。 */
+  --lg-blur:26px;
+  --lg-sat:185%;
+
+  /* 卡片玻璃底（.card 消费）。
+     ★★ 这个值调过两轮，别再凭感觉往上加：
+       .44 时卡片在浅底上几乎是一块白板 —— 白度盖过了背后透进来的光晕，
+       「玻璃」的读法就没了（剩下「一块刷了浅色的板」）。
+       真正的通透靠的是**底薄 + 背后有颜色**，不是靠底厚。
+       压正文的可读性由 --card-hi 那道棱边高光和文字色本身保证，不需要靠加厚底。 */
+  --lg-card:rgba(255,255,255,.26);
+
+  /* 液态斑：三层不规则色团，靠 blur 扩散成「颜色藏在玻璃内部」。
+     ★ 与线性渐变的区别就在「不规则」—— 三层圆心刻意错开、半径不等，
+       叠出来的过渡没有方向性，所以读不出「一条斜向渐变」。
+       （线性渐变的廉价感正来自那个可辨认的方向。） */
+  /* ★★ 弹窗卡片的主要色感就来自这三个值 —— 不要因为「怕花」把它们调淡：
+     卡片只有约 140×60，backdrop-filter 的 26px 采样圈把背后的色彩差异
+     平均掉了大半，指望「背景透进来」是透不出颜色的（物理限制，不是参数问题）。
+     所以小卡片上的「液态」必须由卡片**自己的色斑**承担。
+     ★ 上限仍是「不许跟状态色抢戏」：三团都偏冷、都低饱和，
+       叠起来是「一层有颜色的玻璃」，而不是「一块彩色贴纸」。 */
+  --liq-1:rgba(126,152,246,.40);
+  --liq-2:rgba(154,128,246,.44);
+  --liq-3:rgba(178,164,250,.34);
+  /* ★ 18px 而不是 30px：blur 必须与**色斑自己的尺寸**相配。
+     弹窗卡片只有约 140×60，斑半径约占 58%（≈80px），30px 的模糊
+     几乎等于斑本身大小 —— 扩散完就是一坨均匀的淡色，颗粒和流动感全没了，
+     真机图上卡片是「一块灰白」而不是「一块有颜色的玻璃」。
+     样张里卡片约 300 宽、blur/斑半径 ≈ 0.2，这里取 18px 才落在同一比例上。 */
+  --liq-blur:18px;
+  --lg-liq-a:.88;
+
+  /* 页面级光晕（.app / body 消费）。
+     ★★ 只放**页面级**，卡片不各带色相 —— 这是本轮拍板的硬约束：
+       卡片一旦按状态色各自出液态斑，就会跟「状态色 + 优先级色」两套颜色语言抢戏，
+       四列并排时读起来像四块彩色板，颜色的含义就废了。
+       页面级有色 + 卡片只吸入 = 拿到绝大部分效果，且不动颜色语言。
+     ★ 为什么不并进 --bg-1..4：那四个键有门在看（要求三通道极差 ≤24，
+       即「页面底色必须是中性色」）。光晕是有色的，塞进去会把那道门撞红 ——
+       而那道门的道理是对的：底色中性、光晕有色，两层各司其职。 */
+  /* ★★ 这三个值踩过一次坑，别再改回 rgba(中明度色,.7x) 那种写法：
+     光晕的第一要求是**比底色亮**（或至少贴着底色的明度），只借它的色相。
+     第一版我写的是 rgba(150,186,255,.76) —— 它比页面底色 #eaedf5 **更暗**，
+     于是那三团在视觉上读成了「阴影 / 水渍」，整页像被洇了一块，非常廉价。
+     真机图一眼就看出来了：光晕要的是「光」，光比周围亮，这是它的物理前提。
+     ★ 用不透明的浅色实色，靠 radial-gradient 渐隐到 transparent 露到底色层 ——
+       这样每团中心是纯色、边缘是过渡，不会像半透明色那样跟底色混成脏灰。 */
+  /* ★★★★ v0.21.1：三个值改成 `rgba(原色, .60)` —— 浓度降到 60%。
+     来历：老大原话「现在的背景颜色还是太浓郁了」，看过四档真实渲染对比图后
+     拍板「B 中压」（候选与实测见 `_shot_211_bgpick.py`）。
+     ★★★ 为什么是**降 alpha**、而不是「把颜色往底色混」：
+       两者**视觉等价**（实测平均差 0.12 / 差>2 的像素 0.00%），
+       但往底色混算出来的实色是 `#ebecf9`，通道跨度只剩 **14** ——
+       会被 13k 的色相门当「近中性色」**跳过**，亮色这三个 glow 从此没人守。
+       改 alpha 写法：rgb 部分不变、跨度仍是 22，门扫得到，浓度却真的降了。
+     ★ 与下面那段老教训不冲突：那条针对的是「**颜色比底色暗**」（150,186,255
+       那种中明度色）会被读成水渍；这里是**同一个浅色降浓度**。
+       且现代浏览器在 premultiplied alpha 空间插值，`rgba(c,a) → transparent`
+       是纯浓度衰减，不会像半透明色那样跟底色混成脏灰。 */
+  --glow-1:rgba(228,230,250,.18);
+  --glow-2:rgba(234,225,251,.18);
+  /* ★★ 这里 R 取 **228**（不是原来的 229）—— 这不是调色（差 1/255，肉眼不可辨），
+     是**修一桩旧账**：原值 (229,230,248) 的通道跨度是 **19**，正好低于色相门的
+     入场线 20 —— 所以 `--glow-3` **从 v0.19.0 起就一直被那道门当「近中性色」跳过**，
+     亮色三个 glow 里实际只有两个在守。是 v0.21.1 新加的那条
+     「材质色跨度必须 ≥ 20」把它抓出来的。取 228 → 跨度 20，门终于扫得到它
+     （色相 234°，仍在紫蓝区间 200–290 内）。 */
+  --glow-3:rgba(228,230,248,.18);
+
+  /* ★★★★★ v0.24.1：亮色这三支的浓度**再降 70%**（.60 → .18）。
+     老大原话「把最底层的亮色的背景颜色再调弱 70%」。
+     ★ 为什么是这三支而不是 --bg-*：把真机截图取像素量过 —— 整页底色落在
+       #f0f0f6 ~ #f6f6f8，其中**唯一读得出颜色的只有右上角 #eeebf6**，
+       那正是 glow-2 那一团；--bg-1..4 是「近白的四个近邻」（跨度 2~4），
+       改不改屏幕上都不动。所以「背景上那个亮色」指的就是这三团光晕。
+     ★ 为什么动 alpha 而不是把 RGB 往白里掺：_validate.py 那道门要求**跨度 ≥ 20**，
+       低于线的会被当近中性色**跳过** —— 往白里掺会把跨度压到 14，
+       那不是「颜色变淡」，那是**把这三支从门上摘了**。改 alpha 是纯浓度衰减。
+     ★ 暗色**没动**（仍是 .60）：老大点名的是「亮色的背景颜色」，只指了一态。 */
+
+  /* 卡片圆角。★ 单独一个键，**不复用 --r-sm**（见开头那段「一处改值连坐」）。
+     ★★★★★ v0.21.0：22 → **14px**。老大原话「四个角的圆弧弧度太大了，想减少一点」。
+       量出来才看清问题有多大：卡片是 **144×61**，22px 圆角占**卡高的 36%** ——
+       这不是「圆角偏大」，是把一张卡片做成了胶囊。14px 占 23%，跟 iOS 卡片同量级。
+       ★ 判据是**圆角 ÷ 卡片高**，不是圆角绝对值。换卡片尺寸时必须重算这一项。 */
+  --r-card:14px;
+
+  /* ★★★★★ v0.21.0 新拆出来的「大容器圆角」。
+     原来 --r-card 被 5 处共用：三列 / 列头 / 卡片 / 设置页浮层大卡。
+     卡片降到 14px 是对的，但**列是 160×490 的大容器**，同一个 14px 挂在列上会显方。
+     大容器圆角 > 小容器圆角是嵌套比例的常规做法（外圆角 ≈ 内圆角 + 内边距）。
+     ★ 引用它的地方：.col / .col-head（popup）、设置页浮层大卡与它的子块（manage）。 */
+  --r-col:20px;
+
+  /* 体积感 = 三层影子合起来的结果，缺一层都不像果冻：
+     · --sh-card    外投影（把卡片从背景上抬起来，大范围、低透明）
+     · --card-hi    顶部 1px 高光（棱边先接住光，这是「像玻璃」的第一关键；
+                    缺了它、只靠透明度，看着就是一片廉价的半透明白）
+     · --sh-card-in 底部内发光（底面把光弹回来，这是「有厚度」的关键）
+     ★★ --sh-card-in 里**不许**再写一遍顶部高光！
+       第一版我在这里也写了 `inset 0 1px 0 rgba(255,255,255,.96)`，
+       而它跟 --card-hi(.78) 是**同一道棱边** —— 两道叠起来棱边过亮、整张卡往白里走。
+       这是量 computed style 时看出来的（box-shadow 里出现了两个 `0 1px 0 0 inset`），
+       肉眼看截图只会觉得「有点白，说不上哪不对」—— 所以必须量。
+       一个位置只允许一道高光，职责归 --card-hi。 */
+  /* ★ 投影浓度调到 .44 并补了一层近距投影：列退成透明容器之后，
+     卡片的下层不再是「列的实面」而是「页面底色 + 光晕」——
+     同样浓度的投影落在浅色光晕上会比落在实面上弱得多，
+     不补这一档，卡片就浮不起来（真机图里卡片是「贴着底」的，不像悬着）。 */
+  --sh-card:0 18px 40px -16px rgba(24,34,64,.20),0 4px 10px -2px rgba(24,34,64,.07);
+  --sh-card-in:inset 0 -18px 28px -22px rgba(255,255,255,.80);
+
+  /* 编辑式排版的展示级数字（看板 KPI 消费）。 */
+  --fs-num:34px;
+}
+
+/* ---------- ② 暗色：整套变量覆盖 ----------
+   ★ 状态色整体提亮一档：暗底上同样的饱和色会显得更闷，
+     不调的话「进行中」和「已完成」在暗色下会糊成一片。
+   ★ 文字色不是把亮色的值取反 —— 纯白正文在暗底上会发光（halation），
+     所以用 #e6e9ef 这种略压的冷白。 */
+html[data-theme="dark"]{
+  --s-todo:#79828f; --s-doing:#8095e8; --s-done:#9a93c4; --s-hold:#a893c9;
+
+  --ink:#e6e9ef; --ink2:#aab2be; --ink3:#89919e; --ink4:#6f7783;
+
+  --line:rgba(255,255,255,.145); --line2:rgba(255,255,255,.075);
+  --accent:#a294f0; --danger:#e08a95;
+
+  --glass:rgba(255,255,255,.055);
+  --glass-hi:inset 0 1px 0 rgba(255,255,255,.07);
+  --card-hi:inset 0 1px 0 rgba(255,255,255,.07);    /* 卡片那道高光（暗色下跟面板同值） */
+
+  /* 看板色阶：热力图五档跟着状态绿一起提亮，否则整块热力在暗底上「陷进去」 */
+  --heat-0:rgba(255,255,255,.07);
+  --heat-1:rgba(84,189,153,.30);
+  --heat-2:rgba(84,189,153,.50);
+  --heat-3:rgba(84,189,153,.74);
+  --heat-4:#54bd99;
+  --bd-add:#79828f;
+  --pri-high:#e08a95; --pri-mid:#dfae5c; --pri-low:#79828f;
+
+  /* 优先级三档在暗底上要**反过来**：亮色下「越深越重要」，暗色下「越亮越重要」。
+     ★ 不覆盖的后果是致命的（本轮真踩）：--p-high 是 #101216 近黑，卡片底是
+       #1c2029，对比度 **1.16:1** —— 高优先级的标题几乎完全看不见，
+       而「普通」那档反而看得到，层级整个反了。
+     ★ 三档的比值照亮色的设计承诺来：最低档仍 > 4.5:1（对卡片底实测 5.9:1），
+       别为了「次要」把字淡到看不清 —— 那是两回事。 */
+  --p-high:#f2f4f8; --p-mid:#c6ccd8; --p-low:#98a0ad;
+
+  /* ★ 列头染色在暗底上要压回去（v0.19.0 看图后修）。
+     .col[data-status] 的 --tint 是**写死在 popup.html 里的亮色 rgb 三元组**
+     （如 doing 的 74,114,232），暗色下没有覆盖；而这一版把 --head-a 从 .17
+     提到了 .20，等于把一个老问题放大了 —— 真机图上暗色列头成了一条高饱和蓝带，
+     比卡片还抢眼，层级整个反了。
+     ★ 这里只降透明度压住它。**根子在 tint 没有两态**，那是个更大的改动
+       （要把 4 个状态色的 tint 全部变量化并两态覆盖），留到下一轮再做。 */
+  /* ★★★★★ v0.21.1：.13 → **.07**（降 46%），与亮色的 .14 → .075 同比例。
+     必须两态一起降：只降亮色的话，暗色下那三条列头带会反过来成为
+     全页最浓的地方（暗底对透明度的放大效应，正是上面那段要压的东西）。 */
+  --head-a:.07;
+  /* ---------- Liquid Glass 材质令牌（暗色覆盖）----------
+     ★ 每个键都要写，哪怕值跟亮色一模一样（--grain / --liq-blur / --r-card / --fs-num）。
+       理由见亮色块那段：13f 的门比的是**键集覆盖**，不看值。 */
+
+  /* 与亮色同一张噪点图（中性纹理，不随主题变色） */
+  --grain:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+  --grain-a:.185;
+
+  --lg-blur:26px;
+  --lg-sat:170%;
+  /* ★ .075 → .09：暗底上这一点点白几乎看不出来，卡片会和页面糊成一片。
+     暗色的「浮起来」靠的是**比底亮一档**，不是靠投影（暗底下投影看不见）。 */
+  --lg-card:rgba(255,255,255,.09);
+
+  /* 液态斑在暗底上必须**降饱和、降透明度**：
+     同一个 rgba 在深色底上会显得比在浅色底上亮得多（暗底放大了透明的视觉重量），
+     照搬亮色那组值会得到三团发光的彩色雾。 */
+  --liq-1:rgba(104,132,238,.42);
+  --liq-2:rgba(140,110,232,.38);
+  --liq-3:rgba(126,118,214,.30);
+  --liq-blur:18px;
+  --lg-liq-a:.72;
+
+  /* 光晕换成低明度深色，且整体更收敛 ——
+     它在暗底上的职责是「让玻璃有东西可吸」，太亮就成了发光体。 */
+  /* 暗色同理，只是方向反过来：要**比暗底亮**才叫光。
+     深色但有明确的色相，中心不透明 —— 玻璃吸到它才有颜色可透。 */
+  /* ★★★★ v0.21.1：与亮色同法 —— 降 alpha 而不是换颜色，理由见亮色那段。
+     暗色的 .60 与亮色的 .60 是**同一个比例**，不是同一个视觉量：
+     暗底会放大透明度的视觉重量（上面那段的老结论），所以暗色这组
+     实际看起来会比亮色那边明显一点点，这是对的 —— 两态都不该浓。 */
+  --glow-1:rgba(38,50,94,.60);
+  --glow-2:rgba(51,42,92,.60);
+  --glow-3:rgba(46,42,90,.60);
+
+  --r-card:14px;
+  --r-col:20px;
+
+  /* 暗色的体积感换一套语汇：投影**加深而不是提亮**（暗底上看不见浅投影），
+     棱边高光只能给一丁点（.15）—— 给多了整张卡边缘像镶了银边。 */
+  --sh-card:0 26px 54px -20px rgba(0,0,0,.72),0 2px 6px rgba(0,0,0,.35);
+  --sh-card-in:inset 0 -18px 28px -22px rgba(255,255,255,.08);
+
+  --fs-num:34px;
+
+  /* 弹窗卡片的实底。★ 比页面底(#0f1116)亮一档才能「浮起来」——
+     暗色下浮层靠的是**更亮**，不是靠投影（投影在暗底上看不见）。 */
+  --card:#1c2029;
+
+  /* 底：不是纯黑。纯黑会让所有描边和投影失效，整页「糊在一块」。
+     三处晕染也换成冷色，保持和亮色同一套「柔和」的语汇。 */
+  --bg-1:#171a22; --bg-2:#1c1826; --bg-3:#1a1a26; --bg-4:#0f1116;
+
+  --sw-a:#2a3145; --sw-b:#14171e;
+  --sw-kn:#2f3748;
+  --sw-kn-ink:#b9cdf7;        /* 钮里的图标色（月亮 → 冷银蓝） */
+  --sw-shadow:0 1px 3px rgba(0,0,0,.5);
+
+  /* 小实底 / 实心块（对应上面那一组）。
+     ★ --solid 在暗色下**反过来变浅**，--solid-ink 跟着变深 ——
+       这两个值必须一起读，单看一个会觉得「调反了」。 */
+  --line-hi:rgba(255,255,255,.085);
+  --field:rgba(255,255,255,.06);
+  --field-solid:#242a35;
+  --solid:#d7dce6; --solid-hover:#eef1f6; --solid-ink:#14171e;
+  --solid-ink-dim:rgba(20,23,30,.55);
+  --toast-bg:rgba(62,68,80,.96); --toast-ink:#14171e;
+  --toast-chip:rgba(20,23,30,.09); --toast-chip-hover:rgba(20,23,30,.16);
+  /* 危险底：暗色下不能用「近白的粉」——那是一块白斑。
+     换成低透明度的红，让它像「染上去的」而不是「贴上去的」。 */
+  --danger-bg:rgba(200,80,100,.17);
+  --warn-bg:rgba(186,117,23,.16); --warn-ink:#e8c489; --warn-line:rgba(220,160,70,.30);
+
+  /* 状态点两档也各要提亮一档才压得住暗底 —— 深色底会把 --dot-late 那种偏暗的红吃掉，
+     量出来只剩一团糊。★ 别只改一个：两态齐全（本仓库栽过「只守亮色那份」）。 */
+  --dot-due:#d9a05c; --dot-late:#e0758a; --dot-halo:rgba(224,117,138,.26);
+  --blue-bg:rgba(96,128,210,.20); --blue-bg-hover:rgba(96,128,210,.30); --blue-ink:#a6bcf5;
+}
+
+/* ---------- ③ 右上角的主题开关 ----------
+   ★ position:fixed 而不是塞进某个 section：它是**全局**设置，不属于任何一页 ——
+     塞进「AI 能力」那页，人切到「看板」就找不到它了。
+   ★ fixed 而不是 absolute：页面会滚，开关不该跟着滚走。
+   ★ z-index 50：**低于**弹窗遮罩(60)。弹窗是模态的，按规矩它该盖住页面上的一切 ——
+     让开关浮在遮罩之上，用户会在一个「除了弹窗别的都不能点」的时刻
+     发现有个东西还能点，那只会让人怀疑遮罩是不是坏了。 */
+.tsw{
+  position:fixed;top:16px;right:20px;z-index:50;
+  width:60px;height:30px;padding:0;margin:0;
+  border:1px solid var(--line2);border-radius:999px;overflow:hidden;
+  background:linear-gradient(115deg,var(--sw-a),var(--sw-b));
+  box-shadow:var(--sw-shadow),var(--glass-hi);
+  cursor:pointer;-webkit-appearance:none;appearance:none;
+  transition:background .3s ease,border-color .3s ease;
+}
+.tsw:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.tsw:hover{border-color:var(--line)}
+
+/* 胶囊里那对「目标提示」图标：左边太阳、右边月亮，各淡一档。
+   亮色时月亮更实（点一下就是变暗），暗色时反过来 —— 一眼看出「按下去会变成什么」。 */
+.tsw-bg{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:space-between;
+  padding:0 7px;color:var(--ink3);pointer-events:none;
+}
+.tsw-bg svg{transition:opacity .3s ease}
+.tsw-bg .tsw-sun{opacity:.34}
+.tsw-bg .tsw-moon{opacity:.62}
+html[data-theme="dark"] .tsw-bg .tsw-sun{opacity:.62}
+html[data-theme="dark"] .tsw-bg .tsw-moon{opacity:.34}
+
+/* 钮。★ 位移用带一点点过冲的曲线（.34,1.32,.5,1）：手感是「啪地吸过去」，
+   而不是匀速平移 —— 匀速在 30px 的距离上看起来像卡了一下。 */
+.tsw-kn{
+  position:absolute;top:2.5px;left:2.5px;width:24px;height:24px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--sw-kn);color:var(--sw-kn-ink);
+  box-shadow:0 1px 3px rgba(16,20,32,.26);
+  transition:transform .34s cubic-bezier(.34,1.32,.5,1),background .3s ease,color .3s ease;
+}
+/* 60 - 24 - 2.5*2 = 31 */
+html[data-theme="dark"] .tsw-kn{transform:translateX(31px)}
+
+/* 钮里的图标交叉切换：一个淡出一个淡入，顺手带一点旋转缩放 ——
+   硬切会让人以为图标「闪」了一下。 */
+.tsw-kn svg{position:absolute;transition:opacity .22s ease,transform .3s ease}
+.tsw-kn .tsw-kmoon{opacity:0;transform:rotate(-38deg) scale(.72)}
+html[data-theme="dark"] .tsw-kn .tsw-ksun{opacity:0;transform:rotate(38deg) scale(.72)}
+html[data-theme="dark"] .tsw-kn .tsw-kmoon{opacity:1;transform:none}
+
+@media (prefers-reduced-motion: reduce){
+  .tsw,.tsw-kn,.tsw-bg svg,.tsw-kn svg{transition:none}
+}
+
+/* ---------- ④ 切换时的「整页颜色连续插值」（v0.23.0 换的机制） ----------
+   ★★ 为什么把「圆扩散」换掉：原来是用 View Transitions 的 clip-path:circle()
+     把新主题从开关位置铺满全屏。clip-path 是**主线程**属性 —— 每帧都要按新半径
+     重新光栅化一次，成本 ∝ 覆盖面积 = **半径的平方**，所以越铺越贵。
+     v0.22.0 只动了曲线与时长（把「每帧新增面积」的峰值从 2/3 处挪到开头）——
+     那是治「什么时候最重」，没治「重不重」：卡顿只是换了个位置出现。
+   ★★ 现在：把这 62 个**颜色令牌**注册成可插值的 <color>，再在 html 上给它们一条
+     transition。切主题只改一个 data-theme 属性，颜色由浏览器逐帧插值 ——
+     没有快照层、没有「活页面 + 两张快照」的三层合成，掉帧的地基没有了。
+   ★★★ 实测（Edge 无头 + CDP 采真实 rAF 帧间隔，同会话同页面各 4 次切换；
+     工具 `_p_360_perf.py` / `_perf_cdp.js`，可复跑）：
+       clip-path 圆扩散    最坏帧 33.4ms   掉帧 20 次（19 次落在「动画期」）
+       opacity 交叉淡入    最坏帧 33.4ms   掉帧 13 次
+       完全不动画(对照)    最坏帧 16.8ms   掉帧  0 次
+       **令牌全量插值**    最坏帧 16.8ms   掉帧  0 次   ← 与「完全不动画」同值
+     ★ 正向证据（防「硬切之后 0 掉帧」的假绿）：切换中途取到的
+       --bg-4 = rgb(117,118,122)（亮 #f6f6f8 与暗 #0f1116 之间）、
+       --glow-1 = rgba(122,129,163,.6) —— 颜色确实在逐帧插值。
+   ★ 两条降级路径（功能永远完整，动画只是锦上添花）：
+     ① prefers-reduced-motion: reduce → 这条 transition 不挂，直接切；
+     ② 浏览器不认 @property → transition 里的自定义属性不合法、整条失效 → 直接切。
+   ★ 代价（据实说）：切换途中会经过一小段「两边颜色各半」的中间态，
+     所以**不再有「新主题从这个按钮推出来」的方向感** —— 那个因果感是圆扩散独有的，
+     而它正是掉帧的来源；老大要的是「连贯地变色」，这一版就是字面意义上的连贯。
+   ★ 维护：底下这份 @property 清单是**从令牌定义生成的**，改色/加令牌后必须重新生成。
+     不靠人记 —— _validate.py 有一道门会重扫源码令牌集合并跟这里对，对不上就报红。
+     （清单会烂，门不会。） */
+@property --accent{syntax:'<color>';inherits:true;initial-value:#6c5fd1}
+@property --bd-add{syntax:'<color>';inherits:true;initial-value:#79828f}
+@property --bg-1{syntax:'<color>';inherits:true;initial-value:#f4f5f7}
+@property --bg-2{syntax:'<color>';inherits:true;initial-value:#f5f4f8}
+@property --bg-3{syntax:'<color>';inherits:true;initial-value:#f4f4f8}
+@property --bg-4{syntax:'<color>';inherits:true;initial-value:#f6f6f8}
+@property --blue-bg{syntax:'<color>';inherits:true;initial-value:rgba(238,243,255,.85)}
+@property --blue-bg-hover{syntax:'<color>';inherits:true;initial-value:rgba(227,234,255,.95)}
+@property --blue-ink{syntax:'<color>';inherits:true;initial-value:#3d5aa8}
+@property --card{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.9)}
+@property --danger{syntax:'<color>';inherits:true;initial-value:#e08a95}
+@property --danger-bg{syntax:'<color>';inherits:true;initial-value:rgba(253,241,243,.95)}
+@property --dot-due{syntax:'<color>';inherits:true;initial-value:#c07a4a}
+@property --dot-halo{syntax:'<color>';inherits:true;initial-value:rgba(192,74,94,.20)}
+@property --dot-late{syntax:'<color>';inherits:true;initial-value:#c04a5e}
+@property --field{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.58)}
+@property --field-solid{syntax:'<color>';inherits:true;initial-value:#ffffff}
+@property --glass{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.55)}
+@property --glow-1{syntax:'<color>';inherits:true;initial-value:rgba(228,230,250,.18)}
+@property --glow-2{syntax:'<color>';inherits:true;initial-value:rgba(234,225,251,.18)}
+@property --glow-3{syntax:'<color>';inherits:true;initial-value:rgba(228,230,248,.18)}
+@property --heat-0{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.07)}
+@property --heat-1{syntax:'<color>';inherits:true;initial-value:rgba(84,189,153,.30)}
+@property --heat-2{syntax:'<color>';inherits:true;initial-value:rgba(84,189,153,.50)}
+@property --heat-3{syntax:'<color>';inherits:true;initial-value:rgba(84,189,153,.74)}
+@property --heat-4{syntax:'<color>';inherits:true;initial-value:#54bd99}
+@property --ink{syntax:'<color>';inherits:true;initial-value:#e6e9ef}
+@property --ink2{syntax:'<color>';inherits:true;initial-value:#aab2be}
+@property --ink3{syntax:'<color>';inherits:true;initial-value:#89919e}
+@property --ink4{syntax:'<color>';inherits:true;initial-value:#b7bcc5}
+@property --lg-card{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.26)}
+@property --line{syntax:'<color>';inherits:true;initial-value:rgba(160,172,192,.5)}
+@property --line-hi{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.78)}
+@property --line2{syntax:'<color>';inherits:true;initial-value:rgba(160,172,192,.18)}
+@property --liq-1{syntax:'<color>';inherits:true;initial-value:rgba(126,152,246,.40)}
+@property --liq-2{syntax:'<color>';inherits:true;initial-value:rgba(154,128,246,.44)}
+@property --liq-3{syntax:'<color>';inherits:true;initial-value:rgba(178,164,250,.34)}
+@property --p-high{syntax:'<color>';inherits:true;initial-value:#101216}
+@property --p-low{syntax:'<color>';inherits:true;initial-value:#626a78}
+@property --p-mid{syntax:'<color>';inherits:true;initial-value:#3f4653}
+@property --pri-high{syntax:'<color>';inherits:true;initial-value:#e08a95}
+@property --pri-low{syntax:'<color>';inherits:true;initial-value:#79828f}
+@property --pri-mid{syntax:'<color>';inherits:true;initial-value:#dfae5c}
+@property --s-doing{syntax:'<color>';inherits:true;initial-value:#8095e8}
+@property --s-done{syntax:'<color>';inherits:true;initial-value:#9a93c4}
+@property --s-hold{syntax:'<color>';inherits:true;initial-value:#a893c9}
+@property --s-todo{syntax:'<color>';inherits:true;initial-value:#79828f}
+@property --solid{syntax:'<color>';inherits:true;initial-value:#3f4653}
+@property --solid-hover{syntax:'<color>';inherits:true;initial-value:#2b313c}
+@property --solid-ink{syntax:'<color>';inherits:true;initial-value:#ffffff}
+@property --solid-ink-dim{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.55)}
+@property --sw-a{syntax:'<color>';inherits:true;initial-value:#dfe8f8}
+@property --sw-b{syntax:'<color>';inherits:true;initial-value:#f4f6fc}
+@property --sw-kn{syntax:'<color>';inherits:true;initial-value:#ffffff}
+@property --sw-kn-ink{syntax:'<color>';inherits:true;initial-value:#e0902f}
+@property --toast-bg{syntax:'<color>';inherits:true;initial-value:rgba(28,30,36,.9)}
+@property --toast-chip{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.18)}
+@property --toast-chip-hover{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.3)}
+@property --toast-ink{syntax:'<color>';inherits:true;initial-value:#ffffff}
+@property --warn-bg{syntax:'<color>';inherits:true;initial-value:rgba(250,242,232,.62)}
+@property --warn-ink{syntax:'<color>';inherits:true;initial-value:#8f5218}
+@property --warn-line{syntax:'<color>';inherits:true;initial-value:rgba(176,103,42,.24)}
+
+@media (prefers-reduced-motion: no-preference){
+  /* ★ 一条 transition，62 个令牌。线性：颜色过渡用 linear 最不容易看出「加速感」。
+     ★ 只管颜色令牌，不写 all —— 写 all 会连布局属性一起过渡，那是另一种事故。 */
+  html{
+    transition:
+    --accent .34s linear,
+    --bd-add .34s linear,
+    --bg-1 .34s linear,
+    --bg-2 .34s linear,
+    --bg-3 .34s linear,
+    --bg-4 .34s linear,
+    --blue-bg .34s linear,
+    --blue-bg-hover .34s linear,
+    --blue-ink .34s linear,
+    --card .34s linear,
+    --danger .34s linear,
+    --danger-bg .34s linear,
+    --dot-due .34s linear,
+    --dot-halo .34s linear,
+    --dot-late .34s linear,
+    --field .34s linear,
+    --field-solid .34s linear,
+    --glass .34s linear,
+    --glow-1 .34s linear,
+    --glow-2 .34s linear,
+    --glow-3 .34s linear,
+    --heat-0 .34s linear,
+    --heat-1 .34s linear,
+    --heat-2 .34s linear,
+    --heat-3 .34s linear,
+    --heat-4 .34s linear,
+    --ink .34s linear,
+    --ink2 .34s linear,
+    --ink3 .34s linear,
+    --ink4 .34s linear,
+    --lg-card .34s linear,
+    --line .34s linear,
+    --line-hi .34s linear,
+    --line2 .34s linear,
+    --liq-1 .34s linear,
+    --liq-2 .34s linear,
+    --liq-3 .34s linear,
+    --p-high .34s linear,
+    --p-low .34s linear,
+    --p-mid .34s linear,
+    --pri-high .34s linear,
+    --pri-low .34s linear,
+    --pri-mid .34s linear,
+    --s-doing .34s linear,
+    --s-done .34s linear,
+    --s-hold .34s linear,
+    --s-todo .34s linear,
+    --solid .34s linear,
+    --solid-hover .34s linear,
+    --solid-ink .34s linear,
+    --solid-ink-dim .34s linear,
+    --sw-a .34s linear,
+    --sw-b .34s linear,
+    --sw-kn .34s linear,
+    --sw-kn-ink .34s linear,
+    --toast-bg .34s linear,
+    --toast-chip .34s linear,
+    --toast-chip-hover .34s linear,
+    --toast-ink .34s linear,
+    --warn-bg .34s linear,
+    --warn-ink .34s linear,
+    --warn-line .34s linear;
+  }
+}
+

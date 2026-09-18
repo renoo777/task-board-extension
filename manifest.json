@@ -1,0 +1,70 @@
+{
+  "manifest_version": 3,
+  "name": "任务台",
+  "version": "0.24.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0saH16Eay/HEYWaRzuuZ3DtE2zNvG0f4E/ndXVeO2lsEoB+aphBCgplNOLawLztZ4LiqylzJI2TaqQUw+BtBVrH75+NisFFMTkZfa1rlrKOIfLfbbBROrG54zs45voLZ7Qs+2yILBb0nq1HB3F1fmmtYAILHpdZ4Qu8N1Ve8hxJGUd+M+szGd6caru59yDApxAP+KJjKjkMF64ksl0w6hnEiFfpznncKO7a5Md1Ai2/LbHQDyze+uRKUrcfazvbsRM9IBr45GCjwG610Eil7VFKOEcZrLK5WcctMp1gZVsTgCze0iETrKEgjbcyfuygTujzFaMKLq4ef+D4UIK/kQwIDAQAB",
+  "description": "点右上角图标即开的轻量任务台：今天聚焦、按项目组织、拖拽流转状态、任务可挂起，网页上常驻一颗悬浮球随手记，还能把任务台浮在桌面最上层。可镜像到飞书多维表格长期保存。",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "storage",
+    "contextMenus",
+    "activeTab",
+    "alarms",
+    "windows",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "https://open.feishu.cn/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["mascot.js", "ballpage.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["mascots/*.webp", "mascots/thumb/*.webp"],
+      "matches": ["http://*/*", "https://*/*"]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "任务台（Ctrl+Shift+L）",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "manage.html",
+    "open_in_tab": true
+  },
+  "commands": {
+    "quick-add": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+L",
+        "mac": "Command+Shift+L"
+      },
+      "description": "打开任务台"
+    }
+  }
+}

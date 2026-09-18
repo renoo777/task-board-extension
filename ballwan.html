@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>网页悬浮球预览</title>
+<style>
+  /* ★ 这一页只是**预览壳**。球本身完全由 ballpage.js 画在 shadow DOM 里，
+     这里的样式一条也碰不到它（shadow 边界挡着），所以随便写，不用克制。
+
+     为什么留着这个页面：
+       · 调样式时不用装扩展、不用开真网页，改完刷一下就能看；
+       · 验收截图（_wan_matrix.html）就是把这个页面套进几个不同尺寸的 iframe 里量的。 */
+  html, body { margin: 0; height: 100%; }
+  body {
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: #3a3f47; background: #fff; padding: 38px 42px;
+  }
+  h1 { font-size: 15px; margin: 0 0 8px; font-weight: 600; }
+  p { margin: 0 0 5px; color: #6b7078; font-size: 13px; }
+  code { background: #f2f4f8; border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1>网页悬浮球预览</h1>
+  <p>球是 <code>ballpage.js</code> 画在 shadow DOM 里的 —— 右边那颗就是它。</p>
+  <p>加 <code>?demo=1</code> 看示例数据；再加 <code>&amp;form=input</code> 直接看输入态，<code>&amp;side=left</code> 看吸附在左边那一侧。</p>
+  <p>吉祥物（v0.24.0）默认就开着：<code>?mc=cat</code> 换角色、<code>&amp;mcs=96</code> 换尺寸、
+     <code>&amp;nomc=1</code> 看原来那颗圆球。</p>
+  <p>真实环境下它注入在每个 http/https 网页上，位置和收起状态存在 storage 里，所有网站共用。</p>
+  <!-- mascot.js 必须排在 ballpage.js 前面：后者启动时就要读 TaskMascot -->
+  <script src="mascot.js"></script>
+  <script src="ballpage.js"></script>
+</body>
+</html>

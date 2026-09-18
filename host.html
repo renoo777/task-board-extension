@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>任务台浮窗</title>
+<style>
+/* 这个小窗的定位很特殊：它不是给人看的界面，而是「浮窗的宿主」。
+   画中画窗口的生命周期永远不超过它的 opener，所以必须有个东西活着当 opener ——
+   工具栏弹窗不行（一失焦就被销毁），只能用 chrome.windows.create 开的独立小窗。
+   它开完浮窗就把自己最小化藏起来，桌面上只留浮窗。
+   所以这里一切从简：一行状态、一段说明、一个按钮，够用就行。 */
+:root{
+  --ink:#17181c; --ink2:#5c636e; --ink3:#8d949e;
+  --act:#6b79da;                 /* 与任务台的「活跃」状态色同源（v0.20.0 起降饱和） */
+  --ok:#8e88b8; --bad:#c05a6a;   /* ★ v0.20.0：完成色与任务台一起从绿改成灰紫 */
+}
+*{box-sizing:border-box}
+/* 别删：下面给 .wrap 设了 display:flex，会盖掉 [hidden] 自带的 display:none */
+[hidden]{display:none!important}
+html,body{
+  margin:0;height:100%;overflow:hidden;background:#f6f6f8;color:var(--ink);
+  font:400 12.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{height:100%;display:flex;flex-direction:column;padding:12px 14px 10px;overflow:hidden}
+.hd{display:flex;align-items:center;gap:7px;flex:0 0 auto}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ink3);flex:0 0 auto}
+.dot.run{background:var(--act);animation:bpulse 1.1s ease-in-out infinite}
+.dot.ok{background:var(--ok)}
+.dot.bad{background:var(--bad)}
+@keyframes bpulse{0%,100%{opacity:.32}50%{opacity:1}}
+.ttl{font-size:13px;font-weight:600;letter-spacing:.2px}
+/* ★ 这三条（.msg/.foot 的 width:100% + overflow-wrap:anywhere、.wrap 的 overflow:hidden）
+   是**保险**，不是修 bug —— 实测过：344×178 里 .msg 是 316 宽、sw==cw、排 2 行，
+   底部 168 + 10 padding 正好 178，零溢出。
+   （曾经在验收图里看到文案被横向切断，一度以为这里坏了；后来在精确 344×178 的 iframe 里
+     量出来才发现那是**截图工具**的锅 —— 无头 Edge 会把顶层文档的布局视口夹到 ~510 宽，
+     于是「按 510 排版、再裁到 344」。页面本身没问题。）
+   留着这三条是因为 .msg/.foot 是 column flex 的子项，将来改文案或换字体时，
+   一旦宽度不再跟容器走、或冒出一个超长英文串，overflow:hidden 会**静默**裁掉后半截。 */
+.msg{margin:7px 0 0;color:var(--ink2);flex:1 1 auto;min-height:0;
+     width:100%;overflow-wrap:anywhere}
+button{
+  margin-top:8px;flex:0 0 auto;width:100%;
+  font:inherit;font-size:13px;font-weight:600;
+  border:0;border-radius:9px;padding:10px 12px;cursor:pointer;
+  background:var(--act);color:#fff;
+}
+button:hover{filter:brightness(1.06)}
+button:active{transform:translateY(1px)}
+button[disabled]{opacity:.55;cursor:default}
+button.ghost{background:rgba(23,24,28,.07);color:var(--ink)}
+button.ghost:hover{background:rgba(23,24,28,.11);filter:none}
+.foot{margin:8px 0 0;flex:0 0 auto;color:var(--ink3);font-size:11px;line-height:1.45;
+      width:100%;overflow-wrap:anywhere}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hd"><span class="dot run" id="dot"></span><span class="ttl" id="ttl">正在浮起来…</span></div>
+  <p class="msg" id="msg">任务台会浮在整个桌面最上层，任何界面都能点开记一笔。</p>
+  <button id="go" hidden>浮到桌面</button>
+  <button id="back" class="ghost" hidden>收起浮窗</button>
+  <p class="foot" id="foot">浮起来后本窗口会自动收起，去任务栏能找回来。</p>
+</div>
+<script src="host.js"></script>
+</body>
+</html>
