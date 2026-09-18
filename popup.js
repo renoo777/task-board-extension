@@ -121,11 +121,14 @@
        4. **可关** —— 设置页一个开关（默认开）。任何「聪明」的输入改造都必须留退路，
           因为它在某些写法上必然猜错。
 
-     支持的写法：
-       日期  今天 / 明天 / 后天 / 大后天 / N天后 / 周X / 星期X / 下周X / 下下周X /
-             X月X日 / X/X / 2026-09-15 / 周末 / 下周末 / 月底
-       项目  #项目名 或 @项目名（须命中已有项目）
-       优先级 !高 !中 !普通，或 !!! / !! / ! */
+    支持的写法：
+      日期  今天 / 明天 / 后天 / 大后天 / N天后 / 周X / 星期X / 下周X / 下下周X /
+            X月X日 / X/X / 2026-09-15 / 周末 / 下周末 / 月底
+            （日期词后面紧跟的「前 / 之前 / 以内」一起摘掉 ——「本周末前」不留一个「前」）
+      项目  #项目名 或 @项目名（须命中已有项目）
+      优先级 !高 !中 !普通，或 !!! / !! / !（后面只能跟标点或句末：`!高度`、`!=` 都不算）
+            或者口语的「优先级比较高」「比较紧急」（否定式「不着急」先判）
+      备注  显式的「备注 / 说明 / 注：」，一直吃到句尾（「注」必须带冒号） */
 
   var WEEK_CN = { "一":1, "二":2, "三":3, "四":4, "五":5, "六":6, "日":7, "天":7 };
 
@@ -135,6 +138,48 @@
     var wd = (new Date().getDay() + 6) % 7;
     var delta = (tw - 1) - wd;
     return delta < 0 ? delta + 7 : delta;
+  }
+
+  /* 「下周X / 下下周X」按**日历上的自然周**算（中文习惯）：weeks=1 是下周、2 是下下周，tw=1..7。
+     ★★ 旧写法是 `dateOffset(7 * weeks + tw - 1)`：它把「下周」当成了「七天以后那一周」，
+        跟今天是周几**完全无关**地往后硬加天数 —— 周五说「下周一要完成」，它记成 9 天后，
+        还落在周五。中文里「下周」指的是下一个自然周（周一起算的整个七天），
+        「下周X」就得落在那个自然周的星期X 上。
+        这是实测出来的错（而且老测试的注释还把它当成「和今天是周几无关，是个确定值」夸过一句，
+        那个「确定」正是错因本身）。 */
+  function nlNthWeekDay(weeks, tw){
+    var d = new Date();
+    d.setHours(0, 0, 0, 0);
+    var wd = (d.getDay() + 6) % 7;                 // 0 = 周一 … 6 = 周日
+    d.setDate(d.getDate() - wd + weeks * 7 + (tw - 1));
+    return ymd(d);
+  }
+
+  /* 标题收尾：压掉连续空白，再剪掉**首尾**孤零零的标点。
+     摘片段之后常会在断口留一个「，」，只 trim 空白是清不掉的。 */
+  function tidyTitle(s){
+    return String(s == null ? "" : s)
+      .replace(/\s{2,}/g, " ")
+      /* ★ 标点前面不留空格（v0.24.0 尾）：摘片段时会在断口补一个占位空格，
+         而断口右边常常正好是个逗号 ——「买菜 !高，顺便修水管」摘掉 `!高` 之后
+         会变成「买菜 ，顺便修水管」。中文里逗号前面多一个空格，一眼就是机器拼的。 */
+      .replace(/\s+([，,、；;：:！!？?。.）)】」』])/g, "$1")
+      .replace(/^[\s，,、;；]+|[\s，,、;；]+$/g, "")
+      .trim();
+  }
+
+  /* 找一个正则在文本里的**所有**命中，返回 [start, end) 列表。
+     ★ 用 exec + g 循环而不是 String.match：带 g 的 match 只回匹配串、拿不到下标，
+       而这里每个命中都要算「从标题里摘掉哪一段」。 */
+  function nlAll(re, text){
+    var out = [], m;
+    re.lastIndex = 0;
+    while ((m = re.exec(text))) {
+      out.push([m.index, m.index + m[0].length]);
+      if (!m[0]) re.lastIndex++;                   // 空匹配 → 推一格，防死循环
+    }
+    re.lastIndex = 0;
+    return out;
   }
 
   /* X月X日：已经过去的月份/日期顺延到下一年 —— 这是个「安排未来」的工具，
@@ -163,10 +208,10 @@
     { re: /今天|今日/, mk: function(){ return dateOffset(0); } },
     { re: /明天|明日/, mk: function(){ return dateOffset(1); } },
     { re: /下下\s*(?:周|星期|礼拜)\s*([一二三四五六日天])?/,
-      mk: function(m){ return dateOffset(14 + (m[1] ? WEEK_CN[m[1]] : 1) - 1); } },
+      mk: function(m){ return nlNthWeekDay(2, m[1] ? WEEK_CN[m[1]] : 1); } },
     { re: /下(?:个)?周末/, mk: function(){ return dateOffset(nlWeekdayDelta(7) + 7); } },
     { re: /下\s*(?:周|星期|礼拜)\s*([一二三四五六日天])?/,
-      mk: function(m){ return dateOffset(7 + (m[1] ? WEEK_CN[m[1]] : 1) - 1); } },
+      mk: function(m){ return nlNthWeekDay(1, m[1] ? WEEK_CN[m[1]] : 1); } },
     { re: /(?:本)?周末/, mk: function(){ return dateOffset(nlWeekdayDelta(7)); } },
     { re: /(?:周|星期|礼拜)\s*([一二三四五六日天])/,
       mk: function(m){ return dateOffset(nlWeekdayDelta(WEEK_CN[m[1]])); } },
@@ -178,6 +223,35 @@
 
   var NL_PRI  = { "高":"high", "中":"mid", "普通":"" };
   var NL_BANG = { "!!!":"high", "!!":"mid", "!":"" };
+
+  /* `!高` 这一小段的**收尾边界** —— 两个正则共用，写成一处免得走偏。
+     ★ 原来写的是 `(?=\s|$)`：中文里 `!高` 后面跟的通常是**全角标点**而不是空格
+       （「买菜 !高，顺便修下水管」），于是它既不进优先级、又**留在标题里** ——
+       屏幕上写着一个 `!高`、卡片上却是普通，看着就是解析坏了。
+       这块是 v0.24.0 尾才暴露的：那版加了「，备注：…」这种写法，两个语法第一次
+       撞在同一句里（「交周报 !高，备注：记得带电脑」）。
+     ★ 也不能一路放宽成「后面不是汉字就行」：`a != b` 会被误判成高优。
+       所以挡三样 —— 汉字/字母/数字（`!高度`）、代码里的运算符（`a != b`）、多余的 `!`。 */
+  var NL_PRI_TAIL = "(?![A-Za-z0-9_\\u4e00-\\u9fa5!$%&*+\\-/:<=>@\\\\^|~#])";
+  /* ★ 提成模块级、不带 g 的正则：exec 无状态，重用一个对象就够，
+     不必每次解析都现 new 两个 RegExp。 */
+  var NL_PRI_W_RE = new RegExp("(^|\\s)!(高|中|普通)" + NL_PRI_TAIL);
+  var NL_PRI_B_RE = new RegExp("(^|\\s)(!{1,3})" + NL_PRI_TAIL);
+
+  /* 口语里的紧急程度（v0.24.0 尾）。
+     人不会为了记一条任务去打 `!高`，他会写「优先级比较高」「比较紧急」。
+     ★ 刻意**只收明确的说法**，不收「重要」「优先」这两个词 —— 它们更常是标题正文本身
+       （「优先考虑 B 方案」「把重要的事排前面」），摘掉等于把任务内容删了。 */
+  var NL_URG_RE = /(?:优先级|优先度)\s*(?:比较|很|非常|挺|特别)?\s*高|(?:比较|很|非常|挺|特别|有点|真)?\s*(?:紧急|加急|急件|着急)|(?:比较|很|非常|挺|特别|有点|真)\s*急/g;
+  /* ★★ 否定式**必须先判**：上面那条会命中「不着急」里的「着急」——
+     不先拦住，说「不着急」的人反而被判成高优。猜错方向比不猜糟得多。 */
+  var NL_CALM_RE = /不(?:太|怎么|那么)?\s*(?:着急|急)|慢慢来|有空再说|不赶|不催/g;
+
+  /* 预览条 chip 的固定顺序：跟着「先想清楚什么时候、然后是哪摊事、最后多急、还有没有要交代的」
+     走，而不是跟着代码里的处理顺序走（那是实现细节，不该漏到界面上）。
+     ★ 提成模块级常量：正则认出来的 chips 和模型补的 chips 要**按同一把尺子混排**，
+       两处各写一份迟早对不上，而对不上时屏幕上看不出谁对。 */
+  var NL_CHIP_ORDER = { date:0, proj:1, pri:2, note:3 };
   function nlPriLabel(v){ return v === "high" ? "高" : (v === "mid" ? "中" : "普通"); }
 
   function projectNames(){
@@ -195,11 +269,12 @@
     var text = String(raw == null ? "" : raw);
     var cuts = [];                       // [start, end) —— 要从标题里摘掉的区间
     var hits = [];
-    var out = { title: text.trim(), date:"", project:"", priority:"" };
+    var out = { title: text.trim(), date:"", project:"", priority:"", note:"" };
 
-    /* —— 优先级 —— */
-    var pw = /(^|\s)!(高|中|普通)(?=\s|$)/.exec(text);
-    var pb = /(^|\s)(!{1,3})(?=\s|$)/.exec(text);
+    /* —— 优先级 ——
+       ★ 收尾边界见 NL_PRI_TAIL（不能用 `(?=\s|$)`，中文后面跟的是全角标点）。 */
+    var pw = NL_PRI_W_RE.exec(text);
+    var pb = NL_PRI_B_RE.exec(text);
     if (pw || pb) {
       var useW = pw && (!pb || pw.index <= pb.index);   // 都命中时取更靠前的
       var m = useW ? pw : pb;
@@ -209,6 +284,23 @@
       cuts.push([at, at + tok.length]);
       hits.push({ k:"pri", lb:"优先级", v:nlPriLabel(out.priority) });
     }
+
+    /* —— 口语里的紧急程度（v0.24.0 尾）——
+       「优先级比较高，比较紧急」这种写法要能认。两处命中就都从标题里摘掉 ——
+       只摘一处的话另一处留在标题里，看着像没解析干净。
+       ★ 不覆盖显式标记：已经写了 `!中` 就以 `!中` 为准（明确的写法比口语更算数）。 */
+    var calmSpans = nlAll(NL_CALM_RE, text);
+    var urgSpans  = nlAll(NL_URG_RE, text);
+    var useUrg = !!urgSpans.length &&
+                 (!calmSpans.length || urgSpans[0][0] <= calmSpans[0][0]);
+    var mood = useUrg ? urgSpans : calmSpans;
+    for (var s2 = 0; s2 < mood.length; s2++) cuts.push(mood[s2]);
+    if (useUrg && !out.priority) {
+      out.priority = "high";
+      hits.push({ k:"pri", lb:"优先级", v:"高" });
+    }
+    /* ★ 否定式（「不着急」）只把词摘掉、**不写优先级**：任务默认就是普通，
+       凭空写一个「普通」上去，等于替用户做了一个他没做的决定。 */
 
     /* —— 项目：只认已有项目名。
        ★ 用「前缀匹配」而不是全等：写「交周报#工作。」时句号会被一起吞进来，
@@ -240,24 +332,62 @@
       if (bestAt < 0 || mm.index < bestAt) { bestAt = mm.index; bestV = v; bestTok = mm[0]; }
     }
     if (bestV) {
+      /* ★ 日期词后面紧跟的「前 / 之前 / 以内」一起摘掉 ——
+         「本周末前把方案定了」只摘「本周末」的话，标题会剩一个「前把方案定了」。
+         这类残留最阴的地方是：日期是对的，所以只看预览条根本发现不了，
+         要盯着标题才看得出来。 */
+      var tailM = /^\s*(?:之前|以前|之内|以内|前)/.exec(text.slice(bestAt + bestTok.length));
+      if (tailM) bestTok += tailM[0];
       out.date = bestV;
       cuts.push([bestAt, bestAt + bestTok.length]);
       hits.push({ k:"date", lb:"日期", v: dateLabel(bestV) + "，" + mdShort(bestV) });
+    }
+
+    /* —— 备注：显式的「备注 / 说明 / 注：」一直吃到句尾 ——
+       ★ 必须吃到句尾，不能只吃一个词：备注是自由文本，长度不可预期。
+       ★ 与已命中的片段**重叠就放弃**（宁可少拆，不能拆错）：
+         「备注：带上合同，周一开会」里日期落在备注词之后，两者抢同一段文字，
+         这时硬拆会把日期也吞进备注。
+       ★ 「注」必须带冒号 —— 不然「注意别迟到」会被拆成备注「意别迟到」，
+         而那句话本身就是任务，不是备注。 */
+    var nm = /(?:^|[\s，,、;；])(?:备注|说明|注\s*[:：])\s*[:：]?\s*([\s\S]+)$/.exec(text);
+    if (nm) {
+      var noteVal = nm[1].trim();
+      var clash = false, nFrom = nm.index;
+      for (var c2 = 0; c2 < cuts.length; c2++) {
+        if (cuts[c2][0] < text.length && cuts[c2][1] > nFrom) { clash = true; break; }
+      }
+      if (noteVal && !clash) {
+        out.note = noteVal;
+        cuts.push([nFrom, text.length]);
+        hits.push({ k:"note", lb:"备注",
+                    v: noteVal.length > 14 ? noteVal.slice(0, 14) + "…" : noteVal });
+      }
     }
 
     /* —— 摘掉命中片段，剩下的才是标题 —— */
     if (cuts.length) {
       cuts.sort(function(a,b){ return b[0] - a[0]; });   // 从后往前删，前面下标才不错位
       var t = text;
-      for (var c = 0; c < cuts.length; c++) t = t.slice(0, cuts[c][0]) + " " + t.slice(cuts[c][1]);
-      t = t.replace(/\s{2,}/g, " ").trim();
+      for (var c = 0; c < cuts.length; c++) {
+        var s0 = cuts[c][0], e0 = cuts[c][1];
+        /* ★ 断口清理：被摘片段左边要是紧挨着一个分隔标点，把它一起带走。
+           不然标题尾巴上会留一个孤零零的「，」（「交周报，备注：带电脑」→「交周报，」）。
+           查 original 串而不是正在被改的那个：s0 左边的文字从没被改过，用原件更稳。
+           ★ 左边是**空白**的情况不在这里处理：下面一律补一个占位空格（防止把两个词粘起来），
+             真要收走的是「这个占位空格正好落在标点前面」那种，交给 tidyTitle 统一收
+             —— 两处各收一半，就会变成「谁生效看不出来」。 */
+        if (s0 > 0 && /[，,、;；]/.test(text.charAt(s0 - 1))) s0 -= 1;
+        t = t.slice(0, s0) + " " + t.slice(e0);
+      }
+      /* 收尾：压掉连续空白，再把标题**首尾**孤零零的标点剪掉（断口清理可能又留一个）。 */
+      t = tidyTitle(t);
       /* ★ 全摘光了就退回原文：解析失败不能让标题变空（回车会什么都不发生，用户以为回车坏了）。 */
       out.title = t || text.trim();
     }
 
-    /* 预览顺序固定成 日期 → 项目 → 优先级：跟着「先想清楚什么时候、然后是哪摊事、最后多急」
-       走，而不是跟着代码里的处理顺序走（那是实现细节，不该漏到界面上）。 */
-    var order = { date:0, proj:1, pri:2 };
+    /* 预览顺序固定成 日期 → 项目 → 优先级 → 备注（顺序表见上面的 NL_CHIP_ORDER）。 */
+    var order = NL_CHIP_ORDER;
     hits.sort(function(a,b){ return order[a.k] - order[b.k]; });
     out.hits = hits;
     return out;
@@ -271,16 +401,25 @@
     var inp = document.getElementById("newTitle");
     if (!bar || !inp) return;
     bar.innerHTML = "";
-    var r = (prefs.nlp && inp.value.trim()) ? nlParse(inp.value, projectNames()) : null;
-    if (!r || !r.hits.length) { bar.hidden = true; return; }
+
+    var raw = inp.value.trim();
+    var r = (prefs.nlp && raw) ? nlParse(raw, projectNames()) : null;
+    var chips = r ? r.hits.slice() : [];
+    /* 模型补的那些槽位接在同一行后面（用虚线边框区分 —— 它们是**读出来的**，
+       不是用户写下的标记）。★ 只收正则没认出来的：同一个槽位显示两遍会读成两条信息。 */
+    var s = (prefs.nlp && raw) ? (aiPreShot || {})[raw] : null;
+    if (s) chips = chips.concat(aiSlots(r || nlParse("", []), s));
+    if (!chips.length) { bar.hidden = true; return; }
+
+    chips.sort(function(a,b){ return NL_CHIP_ORDER[a.k] - NL_CHIP_ORDER[b.k]; });
     bar.appendChild(document.createTextNode("识别为"));
-    for (var i = 0; i < r.hits.length; i++) {
+    for (var i = 0; i < chips.length; i++) {
       var c = document.createElement("span");
-      c.className = "nlpc k-" + r.hits[i].k;
+      c.className = "nlpc k-" + chips[i].k + (chips[i].ai ? " ai" : "");
       var b = document.createElement("b");
-      b.textContent = r.hits[i].lb;
+      b.textContent = chips[i].lb;
       c.appendChild(b);
-      c.appendChild(document.createTextNode(r.hits[i].v));
+      c.appendChild(document.createTextNode(chips[i].v));
       bar.appendChild(c);
     }
     bar.hidden = false;
@@ -291,8 +430,13 @@
 
      先说清楚这个功能**不做什么**，因为这几条比它做什么更重要：
 
-       它不主动。不会冒出来提醒你、不会在卡片上加一个「AI 觉得」的角标、
-         不会因为你没理它就憋着。你不回车，它不存在。
+       它不打扰。不会弹窗、不会在卡片上加一个「AI 觉得」的角标、不会因为你没理它就憋着 ——
+         它的结论只出现在**输入框下面那条预览**里，你不看它就等于不存在。
+       ★ v0.24.0 尾：原来是「你不回车，它不存在」，现在改成**输入停顿就先问一次**，
+         把判断提前摆在预览条上。这是同一件事的两面：让它出现在预览里，
+         是为了让「回车之后才发现它猜错了」这个场景根本不发生。
+         变的是**调用时机**，不是性格 —— 它仍然不写任何数据、不改任何字，
+         回车之前它对任务台没有半点影响。
        它不覆盖。正则认出来的槽位一个字都不动 —— 那是你熟悉的写法，
          改它就是在跟你的预期打架。它只填空着的那些。
        它不改写。标题只在「模型给的更短、而且是原话的子串」时才采纳。
@@ -302,13 +446,109 @@
            宁可不说，不能说错。用户被 AI 猜错五六次之后，会永久关掉这个功能，
            而那个代价比「少省几十次点击」大得多。
 
-     为什么是异步的：回车必须**立刻**建出任务来（这条产品的性格，
+     为什么落库仍然是**同步**的：回车必须**立刻**建出任务来（这条产品的性格，
      也是 v0.9.1 那四条设计纪律里「猜错了必须当场看得见」的前提）。
      等模型回来再建任务，等于让每次回车都赌一次网络。
      所以先按正则建、几秒后模型想明白了就地改好，再给一个 5 秒的撤销。
+     ★ 停顿预览已经问过的那条，回车时直接把结果并进去（预览上写着什么就落什么）——
+       否则预览是个承诺、落库是另一回事，那比不给预览更糟。
      ============================================================ */
 
   var aiAsked = {};        // 一条任务只问一次。弹窗关掉就重来，最多多问一次，不累积。
+
+  /* ---------- 输入停顿后的预览（v0.24.0 尾）----------
+     打字停下来 900ms 就问一次模型，把它的判断**先摆在预览条上**。
+     ★ 为什么不每敲一个字都问：那是把用户当输入法用 —— 一次网络请求换一个字符的变化。
+     ★ 为什么不等到回车才问：那样「模型猜错了」只能等任务建完才知道，
+       而这条功能整条存在的理由就是「猜错了必须当场看得见」—— 回车前后都该看得见。
+     ★ 同一段文字只问一次（拿输入内容当键）。改一个字才算新问题；改回来也不重问。 */
+  var aiPreShot = {};      // 输入串 → 模型的建议（问过且有结果才有键）
+  var aiPreTimer = null;
+  var AI_PRE_MS = 900;
+
+  /* 「值不值得问模型」—— 预览和回车**共用这一个判据**。
+     短句（「买咖啡豆」）没有可拆的东西，问了只是白花一次调用。
+     ★ 两处必须一致：一处宽一处窄，就会出现「预览条上认出来了、回车之后又没了」
+       这种自相矛盾，而这正是这个功能最不能出的错。 */
+  function worthAsk(raw){
+    return String(raw).length >= 12 || /[，,；;、]/.test(raw);
+  }
+
+  /* 把模型的建议整理成 chips —— **只收正则没认出来的槽位**。
+     正则已经认出来的那个槽位，模型说什么都不显示：用户写的是他熟悉的写法，
+     再摆一个上去只会让预览条变长，还让人以为有两份信息。 */
+  function aiSlots(r, s){
+    var out = [];
+    if (s.dateWord && !r.date) {
+      /* 模型只给相对词（「下周三」），换算仍然走现成那张规则表 —— 不让模型直接给日期。 */
+      var dr = nlParse(s.dateWord, []);
+      if (dr.date) out.push({ k:"date", lb:"日期", ai:1,
+                              v: dateLabel(dr.date) + "，" + mdShort(dr.date) });
+    }
+    if (s.project && !r.project) out.push({ k:"proj", lb:"项目", v:s.project, ai:1 });
+    if (s.priority && !r.priority) out.push({ k:"pri", lb:"优先级", v:nlPriLabel(s.priority), ai:1 });
+    if (s.note && !r.note) {
+      out.push({ k:"note", lb:"备注", ai:1,
+                 v: s.note.length > 14 ? s.note.slice(0, 14) + "…" : s.note });
+    }
+    return out;
+  }
+
+  /* 把模型的建议并进解析结果 —— **只填空缺**，正则认出来的一律不动。
+     和 aiFallback 里那套是同一个口径，只是时机不同（一个在回车前、一个在回车后）。 */
+  function mergeAi(r, s){
+    if (!r.date && s.dateWord) {
+      var dr = nlParse(s.dateWord, []);
+      if (dr.date) r.date = dr.date;
+    }
+    if (!r.project && s.project) r.project = s.project;
+    if (!r.priority && s.priority) r.priority = s.priority;
+
+    var tookNote = false;
+    if (!r.note && s.note) {
+      r.note = s.note;
+      /* ★★ 备注收下了，就把它**从标题里摘掉** —— 同一段话在标题和备注里各出现一次
+         就是重复（用户在卡片上会看到两遍「要提前定会议室」）。
+         这一摘仍然守着「只摘、不写」：删掉的正是刚放进备注的那一段，
+         模型没有任何机会往标题里塞新词。 */
+      if (r.title.indexOf(s.note) >= 0) {
+        r.title = tidyTitle(r.title.replace(s.note, ""));
+        tookNote = true;
+      }
+    }
+    /* 模型给的标题（更短 + 是原话的子串）只在**没摘过备注**时才考虑 ——
+       它比「把备注那段摘走」更保守，优先级也更低。 */
+    if (!tookNote && s.title && s.title.length >= 2 && s.title.length < r.title.length &&
+        r.title.indexOf(s.title) >= 0) r.title = s.title;
+    return r;
+  }
+
+  function aiPreTick(){
+    aiPreTimer = null;
+    var inp = document.getElementById("newTitle");
+    if (!inp || typeof AI === "undefined") return;
+    var raw = inp.value.trim();
+    if (!prefs.nlp || !raw) return;
+    if (!worthAsk(raw)) return;
+    if (Object.prototype.hasOwnProperty.call(aiPreShot, raw)) return;
+
+    var base = nlParse(raw, projectNames());
+    if (base.date && base.project && base.note) return;   // 正则全认出来了，没有模型可插话的地方
+
+    aiPreShot[raw] = { note:"" };                         // 先占位，防同一段文字被问两遍
+    AI.suggestTask(raw, projectNames()).then(function (s) {
+      /* ★ 失败 / 没配置 → **把占位删掉**，下次停顿还能重试。
+         留一个「问过但没结果」的哨兵值，等于把「暂时不行」变成「一直不行」——
+         那条教训在「本周小结」的缓存里已经写过一次了。 */
+      if (!s) { delete aiPreShot[raw]; return; }
+      aiPreShot[raw] = s;
+      var el = document.getElementById("newTitle");
+      /* ★ 期间用户又改过字 → 这份结果已经对不上了，扔掉。
+         不扔的话预览会张冠李戴：屏幕上写着 A，下面注解着 B。 */
+      if (!el || el.value.trim() !== raw) return;
+      renderNlpBar();
+    });
+  }
   /* 撤销用的版本号。★ 存内存，不写进任务对象 —— 写进去的话，它会跟着导出 JSON
      和飞书同步一起走，在用户自己的数据里留一个只对我们有意义的字段。 */
   var aiRev = {};
@@ -387,15 +627,32 @@
       if (!base.priority && s.priority) {
         patch.priority = s.priority; bits.push(nlPriLabel(s.priority));
       }
-      /* 标题：只能摘、不能改写（见文件头那段）。 */
-      if (s.title && s.title.length >= 2 && s.title.length < t.title.length &&
+      /* 备注：★ 只填空着的（正则认出来的显式「备注：」一个字都不动），
+         而且**不落优先级/日期的位置** —— 它是补充说明，不是第二个标题。
+         这一条正是「要提前定会议室」那类话的去处：它是任务的内容，不是任务本身。 */
+      var tookNote = false;
+      if (!base.note && s.note && s.note !== t.note) {
+        patch.note = s.note; bits.push("备注");
+        /* ★★ 收下备注之后，把它**从标题里摘掉** —— 不摘的话同一段话会在标题和备注里
+           各出现一次（卡片上看着就是重复）。仍然只摘、不写：
+           删掉的正是刚放进备注的那一段，模型没机会往标题里塞新词。 */
+        if (t.title.indexOf(s.note) >= 0) {
+          patch.title = tidyTitle(t.title.replace(s.note, ""));
+          tookNote = true;
+          bits.push("标题");
+        }
+      }
+      /* 标题：只能摘、不能改写（见文件头那段）。
+         ★ 已经因为「摘备注」动过标题就不再动它 —— 一次只做一件事，出了错好归因。 */
+      if (!tookNote && s.title && s.title.length >= 2 && s.title.length < t.title.length &&
           t.title.indexOf(s.title) >= 0) {
         patch.title = s.title; bits.push("标题");
       }
 
       if (!bits.length) return;                  // 一个槽位都没补上 → 静默
 
-      var before = { title: t.title, date: t.date, project: t.project, priority: t.priority };
+      var before = { title: t.title, date: t.date, project: t.project,
+                     priority: t.priority, note: t.note };
       var ok = false;
       for (var k in patch) { if (patch.hasOwnProperty(k)) { t[k] = patch[k]; ok = true; } }
       if (!ok) return;
@@ -1910,7 +2167,13 @@
        摘干净的那些词就是标题。解析结果实时显示在下面那条 .nlpbar 里 ——
        猜错了当场看得见，这是这条功能敢不敢用的分水岭。 */
   var newTitleEl = document.getElementById("newTitle");
-  newTitleEl.addEventListener("input", renderNlpBar);
+  newTitleEl.addEventListener("input", function(){
+    renderNlpBar();                                  // 正则的结果是同步的，立刻出
+    /* ★ 模型的结果要等网络，所以**停顿一下再问**（见 aiPreTick 那节）。
+       每次 input 都问的话，打十个字就是十次请求 —— 而用户一个字都没多得到。 */
+    if (aiPreTimer) clearTimeout(aiPreTimer);
+    aiPreTimer = setTimeout(aiPreTick, AI_PRE_MS);
+  });
   newTitleEl.addEventListener("keydown", function(e){
     if (e.key !== "Enter") return;
     var raw = this.value.trim();
@@ -1920,8 +2183,15 @@
     var pri = "";
     var title = raw;
     var nl = null;
+    var pre = aiPreShot ? aiPreShot[raw] : null;
+    /* ★ 只认**已经有内容**的那份结果：占位对象（请求还在飞）没有内容，
+       把它当结果用会得到一个空的合并。 */
+    var preDone = (pre && (pre.dateWord || pre.project || pre.priority || pre.note)) ? pre : null;
     if (prefs.nlp) {
       var r = nlParse(raw, projectNames());
+      /* ★ 停顿那会儿已经问过模型：把它的判断并进解析结果。
+         —— 预览上写着什么，回车后就落什么；这是「预览」这个承诺的全部意义。 */
+      if (preDone) mergeAi(r, preDone);
       title = r.title || raw;
       if (r.date) due = r.date;
       /* 解析出来的项目**优先于**捕获行当前选的那个：用户把它写在句子里，
@@ -1930,18 +2200,32 @@
       pri = r.priority;
       nl = r;
     }
+    /* ★ 请求还在飞（有占位、但还没内容）就回车了 → **把它取消掉，统一交给下面那条
+       aiFallback 处理**。理由是两套东西同时想「补这条任务」会出两个后果：
+       用户收到两条 toast，而第二条的撤销会把第一条刚做的修改一起抹掉。
+       代价是白花一次请求 —— 用户输入快于 900ms 时才会有。 */
+    if (!preDone) {
+      if (aiPreTimer) { clearTimeout(aiPreTimer); aiPreTimer = null; }
+      if (aiPreShot && Object.prototype.hasOwnProperty.call(aiPreShot, raw)) delete aiPreShot[raw];
+    }
     var newId = uid();
     /* ★ v0.16.0：正则没认出日期或项目时，异步问一次 AI。
        注意是**建完任务之后**才问 —— 顺序反过来的话，每次回车都要等模型，
-       而模型可能永远不回来（超时上限 10 秒）。回车必须立刻有结果。 */
-    if (nl && (!nl.date || !nl.project)) {
+       而模型可能永远不回来（超时上限 10 秒）。回车必须立刻有结果。
+       ★ v0.24.0 尾：备注也纳入「缺什么补什么」——那是这一版新增的能力，
+       正则只认显式的「备注：」，剩下的话得靠模型读。
+       ★ 但要先过一道「值不值得问」：短句没有可拆的东西（「买咖啡豆」），
+       问了只是白花一次调用，还会让界面上多一次「补上了」的打扰。 */
+    var worthAI = worthAsk(raw);
+    if (nl && worthAI && !preDone && (!nl.date || !nl.project || !nl.note)) {
       aiFallback(newId, raw, { title: title, date: due === todayStr() ? "" : due,
-                               project: nl.project || "", priority: pri });
+                               project: nl.project || "", priority: pri,
+                               note: nl.note || "" });
     }
     st.tasks.unshift({
       id: newId, title: title, status: "todo",
       project: proj, date: due,
-      note: "", url: "",
+      note: nl && nl.note ? nl.note : "", url: "",
       createdAt: Date.now(), doneAt: null,
       priority: pri, order: null
     });

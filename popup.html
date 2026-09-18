@@ -1045,6 +1045,12 @@ html.has-showpicker .drawer .datewrap input[type="date"]::-webkit-calendar-picke
 }
 .nlpbar .nlpc.k-proj{background:rgba(79,138,125,.1);border-color:rgba(79,138,125,.2)}
 .nlpbar .nlpc.k-pri{background:rgba(176,122,90,.11);border-color:rgba(176,122,90,.2)}
+/* 备注用中性灰（PALETTE 里的 #7a8290）——它既不是时间也不是轻重，
+   给它一个彩色会读成「这是又一个要看的字段」，而它只是补充说明。 */
+.nlpbar .nlpc.k-note{background:rgba(122,130,144,.1);border-color:rgba(122,130,144,.2)}
+/* 模型补的那些 chip 用**虚线**边框区分 —— 它们是「读出来的」，不是用户写下的标记。
+   ★ 不给说明文字：界面上不放提示（老大定过的规矩），靠边框形状区分就够。 */
+.nlpbar .nlpc.ai{border-style:dashed}
 .nlpbar .nlpc b{font-weight:500;color:var(--ink)}
 
 /* 「标签 + 三档」两行。标签给固定 38px：「状态」和「优先级」两个字宽度不同，
