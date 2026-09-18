@@ -160,25 +160,21 @@
     ".ring{position:absolute;width:26px;height:26px;border:1px solid rgba(255,255,255,.26);border-radius:50%;pointer-events:none}",
     ".badge{position:relative;color:#fff;font-size:12px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}",
 
-    /* ---------- 悬停才露的小齿轮 ----------
-       它不在主路径上：鼠标不上去就看不见，也不占布局（absolute）。 */
-    ".gear{",
-    "  position:absolute;top:50%;transform:translateY(-50%);",
-    "  width:22px;height:22px;padding:0;border:0;border-radius:50%;",
-    "  display:flex;align-items:center;justify-content:center;",
-    "  background:#fff;color:var(--dim);cursor:pointer;",
-    "  box-shadow:0 2px 8px rgba(16,20,32,.18),0 0 0 1px rgba(16,20,32,.05) inset;",
-    "  opacity:0;pointer-events:none;",
-    "  transition:opacity .14s ease,color .13s ease;",
-    "}",
-    ".wrap:hover .gear{opacity:1;pointer-events:auto}",
-    ".gear:hover{color:var(--blue)}",
-    ".gear:active{transform:translateY(-50%) scale(.92)}",
-    "/* 齿轮待在球的**内侧**（球贴右边时它在球左边），免得被屏幕边缘切掉 */",
-    ".wrap.side-right .gear{right:calc(var(--bs,32px) + 6px)}",
-    ".wrap.side-left .gear{left:calc(var(--bs,32px) + 6px)}",
-    "/* 输入框已经把那一侧占掉了，齿轮让位 */",
-    ".wrap.form-input .gear{opacity:0;pointer-events:none}",
+    /* ---------- ★ v0.24.0 尾：原来这里挂着一个「悬停才露的小齿轮」 ----------
+       它是进设置页的唯一入口（点它 = chrome.runtime.openOptionsPage()），
+       老大看完真机截图后点名删掉：球旁边不该再多出任何东西。
+       → 这一版把它**连根拔掉**，而且必须三处一起走，留一处就是半成品：
+           ① 结构：MARKUP 里那个 <button class="gear">  →  删
+           ② 样式：原本这一整段（absolute / opacity:0 / hover 才露 / 内侧定位）→ 删
+           ③ 行为：$("gear").addEventListener("click", …)          → 删
+         · 只删样式、留着结构：按钮看不见但**还在 DOM 里**（能被 Tab 聚焦、
+           能被指针点上，而且读屏软件会念出来）；
+         · 只删结构、留着样式：那段 CSS 变成死代码，下一个人以为功能还在。
+       ★ 进设置页的入口没有消失：扩展图标 → 弹窗里两处都能开设置页；
+         桌面球那条线上也有自己的设置行。
+       ★ 判据已经改成**否定式**（_validate.py / _pack.py 各一条），钉的就是
+         「这三处一个都不许回来」—— 本段注释里虽然点着那个类名，但判据是
+         **剥注释之后**再搜的，不会被自己顶包。 */
 
     /* ---------- 输入框（点了球才出现，就在球内侧） ---------- */
     "#edit{",
@@ -230,17 +226,13 @@
 
   var root = host.attachShadow({ mode: "open" });
 
+  /* ★ 这里原来还夹着一个「设置」小按钮（悬停才露）。已按老大要求删掉 ——
+     它就是那个按钮的**结构**那一半，另两半在上面那段 CSS 和下面的交互段。
+     现在骨架只剩三件：容器、球、输入框。 */
   var MARKUP =
     '<div class="wrap side-right" id="wrap">' +
       '<button class="ball" id="ball" type="button" title="点一下记一笔，按住可拖到边上">' +
         '<span class="ring"></span><span class="badge" id="badge">–</span>' +
-      '</button>' +
-      '<button class="gear" id="gear" type="button" title="设置">' +
-        '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">' +
-        '<circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.4"/>' +
-        '<path d="M8 1.7v1.7M8 12.6v1.7M1.7 8h1.7M12.6 8h1.7M3.6 3.6l1.2 1.2M11.2 11.2l1.2 1.2' +
-        'M12.4 3.6l-1.2 1.2M4.8 11.2l-1.2 1.2" fill="none" stroke="currentColor" ' +
-        'stroke-width="1.3" stroke-linecap="round"/></svg>' +
       '</button>' +
       '<input id="edit" type="text" placeholder="记一笔，回车新建…" autocomplete="off">' +
     '</div>';
@@ -557,13 +549,9 @@
 
   /* ================================================================ 交互 */
 
-  $("gear").addEventListener("click", function (e) {
-    e.stopPropagation();
-    if (HAS_CHROME && chrome.runtime && chrome.runtime.openOptionsPage) {
-      try { chrome.runtime.openOptionsPage(); } catch (err) {}
-    }
-    setForm("idle");
-  });
+  /* ★ 这里原来绑着那个小齿轮的 click（= 打开设置页）。按钮已经删掉，
+     事件绑定跟着一起走 —— 留着的唯一后果是 `$("gear")` 返回 null、
+     整段脚本在控制台抛 TypeError（球直接不出来）。 */
 
   document.addEventListener("keydown", function (e) {
     if (e.key !== "Escape") return;
