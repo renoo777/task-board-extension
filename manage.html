@@ -273,6 +273,66 @@ body{
 .sub{font-size:11.5px;color:var(--ink4);line-height:1.6}
 .hr{height:1px;background:var(--line2);margin:16px 0}
 
+/* ---------- 分步小标题（v0.27.0：飞书页改三段的骨架） ----------
+   ★ 为什么给飞书页加「1 / 2 / 3」：这一页本质是**有序的三件事** ——
+     先有应用（凭证）→ 再有表（位置）→ 最后才是同步。
+     原来三样东西平铺在一页里，谁先谁后全靠猜，还平白多出一个
+     「创建多维表格」按钮、看不出它算第几步。
+   ★ 序号用描边小方块，跟「底表」那枚 .wtag 是同一套视觉语言 ——
+     同一页里别冒出两种标签样式。
+   ★ 段与段的分隔用 border-top，不用 .hr 元素：.hr 是"插一个空 div 当线"，
+     段多了就要每处都记得插；border-top 跟着 .step 走，漏不了。 */
+.step + .step{margin-top:18px;padding-top:18px;border-top:1px solid var(--line2)}
+.stephd{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.stephd i{
+  flex:0 0 auto;font-style:normal;font-variant-numeric:tabular-nums;
+  font-size:10.5px;letter-spacing:.3px;color:var(--ink4);
+  border:1px solid var(--line2);border-radius:6px;padding:1px 6px;
+}
+.stephd span{font-size:13px;color:var(--ink);font-weight:500;letter-spacing:.2px}
+/* 「立即同步」那一排要把按钮顶到右边。用一根弹性空档，不写 margin-left —— 
+   按钮个数一变，margin 写法就得跟着改，空档不用。 */
+.grow{flex:1 1 auto;min-width:0}
+
+/* 折叠起来的手填区（Base token / 数据表 ID）。
+   ★ 收起时要**看起来像能点**：summary 的默认三角在 Chrome 里是个很小的点，
+     去掉之后若什么都不留，那一行就只是「手动填写」四个灰字，没人知道能展开。
+     所以自带一个 › 当指示，展开时转 90°。 */
+.adv{margin-top:12px}
+.adv > summary{
+  display:inline-flex;align-items:center;gap:5px;cursor:pointer;user-select:none;
+  font-size:11.5px;color:var(--ink4);list-style:none;
+}
+.adv > summary::-webkit-details-marker{display:none}
+.adv > summary::before{
+  content:"\203A";display:inline-block;font-size:13px;line-height:1;
+  transition:transform .15s ease;
+}
+.adv[open] > summary::before{transform:rotate(90deg)}
+.adv > .grid2{margin-top:10px}
+
+/* ---------- 扫码创建应用（v0.27.0） ----------
+   ★ .qrimg 是**纯白底**，深色主题下也不换：反色二维码不少手机读不出来。
+     外面那层 .qrbox 跟 .where / .status 用同一套玻璃卡片（--glass + --line2），
+     这样它在这页里是"多出来的一块"，而不是"另一种风格的浮层"。 */
+.qrbox{
+  display:flex;gap:16px;align-items:flex-start;margin-top:12px;padding:14px;
+  border-radius:11px;background:var(--glass);border:1px solid var(--line2);
+  -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+}
+/* ★ 200×200 和内边距 14 是量出来的，不是随手定的：
+   URL 约 203 字符 → 二维码落在 v9，53×53 个模块。
+   那 14px 内边距要够 QR 规范要求的 4 个模块白边（quiet zone）——
+   14 ÷ 3.25 ≈ 4.3 个模块，够了；这样屏幕上每个模块约 3.2px。
+   白边只能靠内边距，不能靠 margin：底色得是白的，不然白边不成立。 */
+.qrimg{
+  flex:0 0 auto;width:200px;height:200px;padding:14px;box-sizing:border-box;
+  border-radius:9px;background:#fff;
+}
+.qrimg svg{display:block;width:100%;height:100%}
+.qrinfo{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:10px}
+.qrline{font-size:12.5px;color:var(--ink2);line-height:1.65;font-variant-numeric:tabular-nums}
+
 .sw2{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--ink2);cursor:pointer;user-select:none}
 /* ---------- 开关：胶囊轨道 + 滑动圆钮（v0.23.0） ----------
    ★★ 还是那个 <input type="checkbox"> 本体，只是 appearance:none 之后自己画。
@@ -450,6 +510,32 @@ body{
   margin:6px 0 -1px;
 }
 .mcgrid .mcsep:first-child{margin-top:0}
+/* ★ v0.28.0 九格收图面板。
+   ★★ 为什么九格是「点得动的格子」而不是「九个上传按钮」：格子位置本身就说明了
+     该放哪张图（左上格＝朝左上）—— 这套顺序跟 page-mascot 的 DIRECTIONS 逐字一致，
+     也是雪碧里九宫格的读法。点格子＝给那一格选图，比「第 1 张…第 9 张」直观。
+   ★ 方向箭头**只在空格显示**（有图就藏起来）：箭头是给"还不知道放什么"的人看的，
+     填上之后再压一个符号在上面，看的就是符号不是图了。 */
+.mc9{
+  display:grid;grid-template-columns:repeat(3,60px);gap:6px;justify-content:start;
+  margin-top:10px;padding:9px;border-radius:11px;
+  background:var(--glass);border:1px solid var(--line2);
+  -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+}
+.mc9 button{
+  appearance:none;-webkit-appearance:none;position:relative;display:block;
+  width:60px;height:60px;padding:0;cursor:pointer;overflow:hidden;
+  border:1px dashed var(--line2);border-radius:9px;background:var(--card);
+  transition:border-color .13s ease;
+}
+.mc9 button:hover{border-color:var(--solid)}
+.mc9 button.has{border-style:solid;border-color:var(--line)}
+.mc9 img{display:block;width:100%;height:100%;object-fit:contain}
+.mc9 svg{
+  position:absolute;left:50%;top:50%;width:18px;height:18px;
+  margin:-9px 0 0 -9px;fill:var(--ink4);opacity:.65;pointer-events:none;
+}
+.mc9 button.has svg{display:none}
 /* 桌面悬浮球：状态点。★ 只有两态 —— 球那边也是"连上 / 没连上"，
    这里多画一个"正在连接"的颜色，两边口径就对不上了。 */
 .bdot{flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:var(--ink4);
@@ -903,34 +989,75 @@ body{
     <!-- 飞书同步 -->
     <section class="sec" id="s-feishu" hidden>
 
-      <div class="grid2">
-        <label class="fld"><span>App ID</span>
-          <input type="text" id="fsAppId" placeholder="cli_ 开头" autocomplete="off" spellcheck="false"></label>
-        <label class="fld"><span>App Secret</span>
-          <input type="password" id="fsSecret" placeholder="应用凭证里的密钥" autocomplete="off"></label>
+      <!-- ① 应用凭证
+           ★ 为什么「扫码创建」跟两个输入框同段：它是**同一件事的另一种做法** ——
+             已经有应用的直接填右边两个框，没有的扫码让飞书现场建一个。
+             原来挂在 App Secret 右边的是「创建多维表格」，那是**第 2 步**的事；
+             摆在第 1 步的框旁边，看着就像「填完凭证顺手点它」，顺序全乱。 -->
+      <div class="step">
+        <div class="stephd"><i>1</i><span>应用凭证</span></div>
+        <div class="grid2">
+          <label class="fld"><span>App ID</span>
+            <input type="text" id="fsAppId" placeholder="cli_ 开头" autocomplete="off" spellcheck="false"></label>
+          <label class="fld"><span>App Secret</span>
+            <input type="password" id="fsSecret" placeholder="应用凭证里的密钥" autocomplete="off"></label>
+        </div>
+        <div class="row wrap" style="margin-top:10px">
+          <button class="btn" id="fsQR">扫码创建</button>
+        </div>
+
+        <!-- 扫码面板：点了「扫码创建」才展开。
+             ★ 二维码容器必须**白底**（深色主题下也一样）——
+               反色二维码不少手机读不出来，这不是审美问题。 -->
+        <div class="qrbox" id="fsQRBox" hidden>
+          <div class="qrimg" id="fsQRImg"></div>
+          <div class="qrinfo">
+            <div class="qrline" id="fsQRHint">用飞书扫这个码</div>
+            <div class="row wrap">
+              <button class="btn sm" id="fsQROpen">在浏览器打开</button>
+              <button class="btn sm" id="fsQRCancel">取消</button>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div class="row mt" style="margin-top:12px">
-        <button class="btn primary" id="fsCreate">创建多维表格</button>
-      </div>
-
-      <div class="hr"></div>
-
-      <div class="grid3">
-        <label class="fld span3"><span>表链接</span>
+      <!-- ② 多维表格 -->
+      <div class="step">
+        <div class="stephd"><i>2</i><span>多维表格</span></div>
+        <label class="fld"><span>表链接</span>
           <input type="text" id="fsLink" placeholder="https://xxx.feishu.cn/base/xxxxxx?table=tblxxxxxx" autocomplete="off" spellcheck="false"></label>
-        <label class="fld"><span>Base token</span>
-          <input type="text" id="fsBase" placeholder="/base/ 后面那串" autocomplete="off" spellcheck="false"></label>
-        <label class="fld"><span>数据表 ID</span>
-          <input type="text" id="fsTable" placeholder="tbl 开头的那串" autocomplete="off" spellcheck="false"></label>
-        <label class="fld"><span>同步</span>
-          <span class="sw2" style="padding-top:7px"><input type="checkbox" id="fsOn"> 已启用</span></label>
+        <div class="row wrap" style="margin-top:10px">
+          <button class="btn" id="fsCreate">新建一张</button>
+        </div>
+
+        <!-- Base token / 数据表 ID 收进折叠区。
+             ★ 为什么收：粘一次表链接就自动拆出这两个值（见 parseBaseLink），
+               日常根本不用手填；摊在外面只会让第 2 步看着像要填三样东西。
+             ★ 为什么**不删**：改过 Base token 的人确实存在 —— fsUrl 里那句
+               「手工改过 Base token 之后，存下来的老网址就失效了」就是为它写的。
+               删掉这两个框，那部分人的配置就再没有入口了。 -->
+        <details class="adv">
+          <summary>手动填写</summary>
+          <div class="grid2">
+            <label class="fld"><span>Base token</span>
+              <input type="text" id="fsBase" placeholder="/base/ 后面那串" autocomplete="off" spellcheck="false"></label>
+            <label class="fld"><span>数据表 ID</span>
+              <input type="text" id="fsTable" placeholder="tbl 开头的那串" autocomplete="off" spellcheck="false"></label>
+          </div>
+        </details>
       </div>
 
-      <div class="row wrap mt" style="margin-top:14px">
-        <button class="btn" id="fsTest">测试连接</button>
-        <button class="btn primary" id="fsSave">保存并同步</button>
-        <button class="btn" id="fsNow">立即同步</button>
+      <!-- ③ 同步
+           ★ 开关从原来「Base token / 数据表 ID / 同步」那一格里搬出来：
+             它夹在两个字段中间时，看着像那两个字段的属性，其实是整页的开关。 -->
+      <div class="step">
+        <div class="stephd"><i>3</i><span>同步</span></div>
+        <div class="row wrap">
+          <span class="sw2"><input type="checkbox" id="fsOn"> 已启用</span>
+          <span class="grow"></span>
+          <button class="btn" id="fsTest">测试连接</button>
+          <button class="btn primary" id="fsNow">立即同步</button>
+        </div>
       </div>
 
       <!-- 底表位置：同步到底进了哪张表、表里现有多少条，直接给入口，不用去飞书里翻 -->
@@ -1020,10 +1147,28 @@ body{
             </span>
           </div>
           <div class="mcgrid" id="mcGrid"></div>
+          <!-- ★ v0.28.0 九格收图。默认收着（`hidden`）—— 绝大多数情况下用户是
+               「换一张图」而不是「逐格微调」，一进来就摆九个空格占地方，
+               反而把上面那个角色网格挤下去了。
+               ★ 面板出现只有两个时机：本会话里传过图（选完就展开）。
+               它**不回填**已有自定义图 —— 回填的是已经对齐过的成品，
+               拿它再走一遍对齐 = 二次缩放，越改越小。 -->
+          <div id="mcMake" hidden>
+            <div class="mc9" id="mcCells"></div>
+            <div class="row wrap" style="margin-top:10px">
+              <button type="button" class="btn sm" id="mcSheet">整张九宫格</button>
+              <button type="button" class="btn sm" id="mcFlip">左右对调</button>
+            </div>
+          </div>
           <!-- ★ 文件选择器**不画出来**（hidden）。用隐藏的原生 input，不是
                「把图拖进来」：拖拽在设置页里会跟整页的其它交互打架，
-               触屏设备上更是根本没法用。 -->
-          <input type="file" id="mcFile" accept="image/*" hidden>
+               触屏设备上更是根本没法用。
+               ★ v0.28.0：这条加了 multiple —— 一次能把九张朝向图全选进来。 -->
+          <input type="file" id="mcFile" accept="image/*" multiple hidden>
+          <!-- 传整张 3×3 走另一个 input：那个是**一张**图切九刀（page-mascot 的
+               tiles() 就是这个作用），跟「九个文件」是两条不同的入口，
+               共用一个 input 就得分长宽比去猜，而方形单图也合法（②A）。 -->
+          <input type="file" id="mcSheetFile" accept="image/*" hidden>
         </div>
       </div>
 
@@ -1352,7 +1497,7 @@ body{
              真正的版本号由 manage.js 从 manifest 读出来覆盖 ——
              写死在 HTML 里等于第二个版本号出处，manifest 一升版这里就开始说谎，
              而且没有任何症状。 -->
-        <div class="ab-ver"><span id="abVer">v0.26.0</span></div>
+        <div class="ab-ver"><span id="abVer">v0.28.0</span></div>
       </div>
     </section>
 
@@ -1431,6 +1576,13 @@ body{
      window.MASCOT_INDEX（同步，不 fetch：Chrome 对 file:// 下的 fetch 是直接拒绝的，
      而真机验收与本地预览都在 file:// 下看这一页）。 -->
 <script src="mascots/index.js"></script>
+<!-- 二维码库（第三方，MIT）：必须在 manage.js 之前 —— manage.js 顶层就用它画码。
+     它是独立文件而不是塞进 manage.js：通用工具跟业务无关，且只有这一页用得上。 -->
+<script src="qrcode.js"></script>
+<!-- ★ v0.28.0：九张朝向图 → 一张 3×3 雪碧（对齐 + 拼装）。
+     排在 manage.js 之前 —— 那个 IIFE 一进去就绑事件、渲染九格，
+     那时候 TaskMascotFit 必须已经在。 -->
+<script src="mascotfit.js"></script>
 <script src="manage.js"></script>
 </body>
 </html>

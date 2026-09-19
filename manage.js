@@ -348,8 +348,10 @@
      两个上下文同时写同一张表就会撞上飞书那个「同表不支持并发写」。 */
   var fsEls = {};
   function fsBind(){
-    ["fsAppId","fsSecret","fsBase","fsTable","fsOn","fsTest","fsSave","fsNow","fsStat","fsReport",
-     "fsLink","fsCreate","fsWhere","fsWhereName","fsWhereCnt","fsWhereHint","fsOpen","fsCopy"]
+    ["fsAppId","fsSecret","fsBase","fsTable","fsOn","fsTest","fsNow","fsStat","fsReport",
+     "fsLink","fsCreate","fsWhere","fsWhereName","fsWhereCnt","fsWhereHint","fsOpen","fsCopy",
+     // ★ v0.27.0：扫码创建应用。fsSave（「保存并同步」）已并进 fsNow，见 fsInit 里的说明。
+     "fsQR","fsQRBox","fsQRImg","fsQRHint","fsQROpen","fsQRCancel"]
       .forEach(function(id){ fsEls[id] = document.getElementById(id); });
   }
 
@@ -601,7 +603,16 @@
       });
     });
 
-    fsEls.fsSave.addEventListener("click", function(){
+    /* 「立即同步」= 存下当前填的配置 + 推一轮（这原来是「保存并同步」的活）。
+       ★ 为什么把两个按钮并成一个（v0.27.0）：
+         原来并排三个 —— 测试连接 / 保存并同步 / 立即同步。后两个的差别只是
+         「要不要先存配置」，而这个差别对用户没有意义：改完配置的人本来就会先存再同步。
+         三个摆一起，只会让人挨个点一遍试。
+       ★ 合并方向：行为取原来 fsSave 那套（先 writeCfg 再 sync-now）——
+         「配置改了要先生效」这条更安全；文案取「立即同步」，它更直白。
+       ★ 删 fsSave 前确认过门槛里没人引用它：_validate.py / _test_manage.js / _pack.py
+         只认 fsTest / fsCreate / fsLink / fsBase / fsTable。 */
+    fsEls.fsNow.addEventListener("click", function(){
       fsEls.fsStat.dataset.busy = "1";
       fsEls.fsStat.textContent = "保存中，并跑一轮同步…";
       fsEls.fsReport.innerHTML = "";
@@ -615,22 +626,227 @@
       });
     });
 
-    fsEls.fsNow.addEventListener("click", function(){
-      fsEls.fsStat.dataset.busy = "1";
-      fsEls.fsStat.textContent = "同步中…";
-      sendToBg({ type:"sync-now" }).then(function(r){
-        delete fsEls.fsStat.dataset.busy;
-        if (r && r.skipped) { fsEls.fsStat.textContent = "未启用或配置不全，没有可同步的内容"; return; }
-        if (r && r.ok) { renderFsStat(okState(r)); toast("同步完成"); }
-        else { fsEls.fsStat.textContent = "同步失败：" + ((r && r.error) || (r && r.reason) || "未知原因"); }
-      });
-    });
-
     fsEls.fsOn.addEventListener("change", function(){
       Sync.writeCfg({ enabled: fsEls.fsOn.checked }).then(function(){
         toast(fsEls.fsOn.checked ? "已启用，稍后自动同步" : "已停用同步");
       });
     });
+
+    /* ---------- 扫码创建应用（v0.27.0） ----------
+       飞书有一条「扫码建应用」的通道（OAuth 2.0 设备授权，RFC 8628），
+       用户不必自己跑去开放平台点七八下。三步：
+         init  → 问平台支持哪些认证方式
+         begin → 拿 device_code 和一条授权链接（这条链接就是要画成二维码的东西）
+         poll  → 每 5 秒问一次；用户在飞书里确认完，就回 app_id / app_secret
+
+       ★★ 协议不是猜的。下面这些常数是从官方 Python SDK 的 scene/registration
+          源码里逐行读出来的，并在真实环境跑通过（2026-09-19）：
+            · 请求体必须是 application/x-www-form-urlencoded。发 JSON 时服务端
+              解析不到参数，只回一句含糊的「auth method is unsupported」——
+              我第一轮就是被这句话绕了一大圈，以为是权限问题。
+            · begin 必须带齐三个参数：archetype=PersonalAgent / auth_method=client_secret
+              / request_user_info=open_id，少一个都拿不到码。
+            · poll 的「还没扫」是 HTTP 400 + error:"authorization_pending"，不是 200。
+            · 实测返回：user_code 形如 VKSQ-SG6P，expires_in=3600 秒，interval=5 秒。
+       ★ 端点域是 accounts.feishu.cn（不是 open.feishu.cn）——
+         manifest 里为此单开了一条 host_permissions，别当成重复的删掉。 */
+
+    var REG_API = "https://accounts.feishu.cn/oauth/v1/app/registration";
+    var qrTimer = null;
+    var qrLink = "";
+    /* 代际计数：每点一次「扫码创建」就 +1。
+       上一轮的轮询发现自己这代过期了就直接退出 —— 
+       比布尔标志干净（不用在每处 return 前记得复位），
+       也顺手解决了「等待中点取消」和「等待中又点一次」两种情况。 */
+    var qrGen = 0;
+
+    function qrStop(){ if (qrTimer) { clearTimeout(qrTimer); qrTimer = null; } }
+
+    function regPost(params){
+      var body = Object.keys(params).map(function(k){
+        return encodeURIComponent(k) + "=" + encodeURIComponent(params[k]);
+      }).join("&");
+      return fetch(REG_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body
+      }).then(function(r){ return r.json(); });
+    }
+
+    /* addons = 预填到「用户扫码后的确认页」上的权限。
+       ★ 编码方式（JSON → gzip → base64url 去填充）抄自官方 SDK 的 _encode_addons，
+         解回来的内容必须与原文逐字相同 —— 这一步在本地用 Python 的 gzip 对过。
+       ★ 只声明真正要用的两条：
+           bitable:app                    读写任务数据（核心，没有它整个功能不成立）
+           drive:drive.metadata:readonly  查这张表的网址（「在飞书打开」用它；拿不到只降级）
+         preset:false = 不要平台默认底座那一套权限，最终应用只带上面两条。
+         这样用户扫码后的确认页上只有两行权限，看得懂、也少一层顾虑。
+       ★ 浏览器侧 gzip 走 CompressionStream（Chrome 80+ 就有；本扩展最低 116）。
+         它是流式的，所以这一整段必然是异步的。 */
+    function regAddonsBlob(){
+      if (typeof CompressionStream !== "function") {
+        return Promise.reject(new Error("这个浏览器不支持 CompressionStream"));
+      }
+      var conf = JSON.stringify({
+        preset: false,
+        scopes: { tenant: ["bitable:app", "drive:drive.metadata:readonly"] }
+      });
+      var cs = new CompressionStream("gzip");
+      var w = cs.writable.getWriter();
+      w.write(new TextEncoder().encode(conf));
+      w.close();
+      return new Response(cs.readable).arrayBuffer().then(function(buf){
+        var u8 = new Uint8Array(buf), s = "";
+        for (var i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+        return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      });
+    }
+
+    /* 画二维码。库是扩展自带的 qrcode.js（第三方，MIT），不走网络 ——
+       授权链接里带着一次性 user_code，发去任何第三方接口画图都等于把它交出去。
+       cellSize 给 1：SVG 是矢量的，放大交给 CSS，缩到多大都清晰。 */
+    function drawQR(text){
+      if (!fsEls.fsQRImg) return false;
+      if (typeof qrcode !== "function") return false;
+      var qr = qrcode(0, "L");      // 0 = 按内容自动选版本；L = 纠错等级
+      qr.addData(text);
+      qr.make();
+      fsEls.fsQRImg.innerHTML = qr.createSvgTag(1, 0);
+      return true;
+    }
+
+    if (fsEls.fsQR && fsEls.fsQRBox) {
+
+      fsEls.fsQROpen.addEventListener("click", function(){
+        if (!qrLink) return;
+        if (typeof chrome !== "undefined" && chrome.tabs && chrome.tabs.create) {
+          chrome.tabs.create({ url: qrLink });
+        } else {
+          window.open(qrLink, "_blank", "noopener");
+        }
+      });
+
+      fsEls.fsQRCancel.addEventListener("click", function(){
+        qrGen++;                 // 让还在跑的那轮自己失效
+        qrStop();
+        fsEls.fsQRBox.hidden = true;
+      });
+
+      fsEls.fsQR.addEventListener("click", function(){
+        qrGen++;
+        var gen = qrGen;
+        qrStop();
+        fsEls.fsQRBox.hidden = false;
+        fsEls.fsQRImg.innerHTML = "";
+        fsEls.fsQROpen.disabled = true;
+        fsEls.fsQRHint.textContent = "正在向飞书申请…";
+
+        var dc = "";
+
+        regAddonsBlob().then(function(addons){
+          return regPost({ action: "init" }).then(function(init){
+            var m = (init && init.supported_auth_methods) || [];
+            if (m.indexOf("client_secret") === -1) {
+              throw new Error("飞书现在不支持这种方式，过会儿再试");
+            }
+            return regPost({
+              action: "begin",
+              archetype: "PersonalAgent",
+              auth_method: "client_secret",
+              request_user_info: "open_id"
+            });
+          }).then(function(begin){ return { begin: begin || {}, addons: addons }; });
+        }).then(function(o){
+          if (gen !== qrGen) return;
+          var begin = o.begin;
+          if (!begin.device_code || !begin.verification_uri_complete) {
+            throw new Error(begin.error_description || begin.error || "飞书没给二维码");
+          }
+          dc = begin.device_code;
+          var u = begin.verification_uri_complete;
+          /* 三个只挂在 URL 上的参数（官方 SDK 的 _apply_registration_options 就是这么拼的）：
+               from=onboard    给落地页认来源，第三方实现里也是这个值
+               createOnly=true 只许**新建**，不许「选一个已有的应用」
+               addons         预填的权限（gzip + base64url，见上）
+             ★ createOnly 非加不可：不加时确认页上允许挑一个已存在的应用，
+               用户随手挑中自己公司正在跑的那个应用，我们就把 bitable 权限
+               加到了它身上 —— 按钮写着「扫码创建」，行为却可能是「改别人的应用」。
+             ★ 不抄 SDK 的 tp / source：那两个纯粹是给飞书统计 SDK 来源用的，
+               我们不是官方 SDK，冒它的名没有意义。 */
+          qrLink = u + (u.indexOf("?") >= 0 ? "&" : "?") +
+                   "from=onboard&createOnly=true" +
+                   "&addons=" + encodeURIComponent(o.addons);
+
+          if (drawQR(qrLink)) {
+            fsEls.fsQRHint.textContent = "用飞书扫码确认";
+          } else {
+            fsEls.fsQRHint.textContent = "二维码没画出来，点下面按钮打开授权页";
+          }
+          fsEls.fsQROpen.disabled = false;
+
+          var interval = (begin.interval || 5) * 1000;
+          var deadline = Date.now() + (begin.expires_in || 600) * 1000;
+
+          function finish(res){
+            qrGen++;             // 收工：让这一代失效，别再有残留的轮询
+            qrStop();
+            fsEls.fsAppId.value = res.client_id;
+            fsEls.fsSecret.value = res.client_secret;
+            fsEls.fsQRBox.hidden = true;
+            // 顺手落盘：第 2 步「新建一张」要拿这两个值，不先存的话
+            // 用户中途切页、刷新，刚扫出来的凭据就白扫了。
+            Sync.writeCfg({ appId: res.client_id, appSecret: res.client_secret })
+              .then(function(){
+                toast("应用已创建");
+                fsEls.fsStat.textContent = "应用已创建，接着填第 2 步";
+              });
+          }
+
+          function tick(){
+            if (gen !== qrGen) return;
+            if (Date.now() > deadline) {
+              fsEls.fsQRHint.textContent = "二维码过期了";
+              qrStop();
+              return;
+            }
+            regPost({ action: "poll", device_code: dc }).then(function(res){
+              if (gen !== qrGen) return;
+              res = res || {};
+              if (res.client_id && res.client_secret) { finish(res); return; }
+              var err = res.error || "";
+              if (err === "authorization_pending") {
+                /* 正常等待态，什么都不做，下一轮继续问 */
+              } else if (err === "slow_down") {
+                interval += 5000;      // 平台让慢点，就慢点
+              } else if (err === "access_denied") {
+                fsEls.fsQRHint.textContent = "你拒绝了这次授权";
+                qrStop();
+                return;
+              } else if (err === "expired_token") {
+                fsEls.fsQRHint.textContent = "二维码过期了";
+                qrStop();
+                return;
+              } else if (err) {
+                fsEls.fsQRHint.textContent = "飞书回了错误：" + (res.error_description || err);
+                qrStop();
+                return;
+              }
+              qrTimer = setTimeout(tick, interval);
+            }, function(){
+              /* 轮询本身撞上网络抖动不终止 —— 否则用户正扫着，界面
+                 却停在「用飞书扫这个码」再也不动了，而码其实还有效。 */
+              if (gen === qrGen) qrTimer = setTimeout(tick, interval);
+            });
+          }
+          tick();
+
+        }).catch(function(e){
+          if (gen !== qrGen) return;
+          fsEls.fsQRHint.textContent = "没能拿到二维码：" + ((e && e.message) || "未知原因");
+          fsEls.fsQROpen.disabled = true;
+        });
+      });
+    }
 
     /* 粘整条链接 → 自动拆出 base_token 和 table_id。
        链接里通常带 ?table=tblxxx（从某个数据表页面复制就有）；
@@ -767,7 +983,9 @@
        改成左导航切页之后它就没意义了 —— 点「数据」本身就是在说「我要看它」，
        再让用户多点一次是白加一层。
      ★ 不要再加回来。真要收东西，用功能块右上角那个「!」卡片。
-     ★ 顺带说明为什么**没有**连带删掉 `.hr` 这个类：飞书段仍用它分段。 */
+     ★ 顺带说明为什么**仍然没有**连带删掉 `.hr` 这个类：别处还在用它分段
+       （v0.27.0 起飞书段改用 `.step` 自己的 border-top 分隔、不再用它 ——
+        但那只是"少了一个使用者"，不等于"这个类没用了"）。 */
 
   /* ---------- 桌面悬浮球（v0.11.0） ----------
      设置页只是**问**后台，自己不发原生消息 ——
@@ -1594,6 +1812,12 @@ function aiBind(){
       var mcDel = document.getElementById("mcDel");
       var mcFile = document.getElementById("mcFile");
       var mcUp = document.getElementById("mcUp");
+      /* ★ v0.28.0 九格收图用的那几个（见下面「九格收图」那一段） */
+      var mcMake = document.getElementById("mcMake");
+      var mcCells = document.getElementById("mcCells");
+      var mcSheetBtn = document.getElementById("mcSheet");
+      var mcFlip = document.getElementById("mcFlip");
+      var mcSheetFile = document.getElementById("mcSheetFile");
       var mcCfg = TaskMascot.readConfig(r[4]);
       /* ★★ v0.26.0：「说话」的复选框。它**不在这格 HTML 里**（它有自己的
          .where，跟自己那一行的标签），但它写的是**同一份配置**（mcCfg.talk）——
@@ -1611,6 +1835,18 @@ function aiBind(){
       /* 两张雪碧 dataURL 合计的体积上限（本钱：storage 一处、快照一处）。
          超了就降一档质量重烘，不再往上加。 */
       var MC_IMG_MAX = 400000;
+      /* ★★ v0.28.0：九格收图的状态。**声明必须在这里、不能挪到下面那段用它
+         的地方去** —— 下面 `if (mcGrid)` 块里的初始化会在读到那一段之前就跑
+         `renderMcCells()`，而 `"use strict"` 下块内 `var` 只提升绑定、不提升赋值：
+         那时 mcSlots 还是 undefined，一取下标就抛 TypeError。
+         （同一类坑见上面 renderMcGrid 那段注释 —— 屏幕上只表现为"网格没重画"，
+           而这边的表现是"九格面板是空的、控制台一句 ReferenceError"。） */
+      var mcSlots = [null, null, null, null, null, null, null, null, null];
+      var mcThumbs = [null, null, null, null, null, null, null, null, null];
+      var mcFrom = 0;      /* 这次文件选择从第几格开始填 */
+      /* 方向箭头的角度（左上/上/右上 · 左/正脸/右 · 左下/下/右下）。
+         第 4 格给 null —— 正脸换成圆点（正对观众，没有"朝哪"这回事）。 */
+      var MC_ROT = [-45, 0, 45, -90, null, 90, -135, 180, 135];
       /* ★★★ v0.24.1：给 `renderMcGrid` 在**函数作用域**上先占一个位置。
          它的调用方除了下面初始化那条，还有**上传 / 删掉**两条异步路径 ——
          那两处写在 `else { ... }` 块的**外面**，而 manage.js 是 `"use strict"`：
@@ -1798,42 +2034,75 @@ function aiBind(){
           mcGrid.appendChild(frag);
         };
         renderMcGrid();
+        renderMcCells();
         paintMc();
       }
 
-      /* ---------------- 上传自己的图（v0.24.1） ----------------
-         ★ 全流程三步：归一化 → 烘雪碧 → 整块写 storage。
-           任何一步失败都只 toast 一句话，**绝不写半份配置**（写进去就是一张空白球）。 */
+      /* ---------------- 九格收图（v0.28.0） ----------------
+         ★ 老路（v0.24.1）是「一张图 + 九组几何变换」烘出九个朝向 —— 身体跟着头
+           一起转（原项目实测：这种画法漂移 22%，正确画法 5%，而且**没有任何对齐
+           算法救得回来**），连「朝右」都是把正脸镜像出来的，不对称的角色一眼假。
+           现在收**九张真朝向图**。
+         ★★ 数据链路**一处没动**：不管九张怎么收，最后都是同一张 custom.dirs
+           + custom.reacts + thumb。所以 readCustom / charUrls / 网页球 / 桌面球 /
+           快照链路全都不用改 —— 这也是这次改动面能这么小的原因。
+         ★ 对准的数学全在 mascotfit.js（那边有单测），这里只管：收图 → 调它 → 存。 */
 
-      /* 归一化：读文件 → cover 裁到 SRC 见方。走 createObjectURL 而不是 FileReader，
-         前者不把整张图读进内存字符串（用户可能丢一张 20MB 的手机原图进来）。 */
-      function mcNorm(file, cb, bad){
-        if (!file) return bad("没选到文件");
+      function mcCellSvg(i){
+        /* 方向箭头。★ 只在空格显示（CSS 里 .has 时藏起来）—— 箭头是给"还不知道
+           该放哪张"的人看的；填上之后再压一个符号在上面，看的就是符号不是图了。 */
+        if (MC_ROT[i] === null) {
+          return '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/></svg>';
+        }
+        return '<svg viewBox="0 0 24 24" style="transform:rotate(' + MC_ROT[i] +
+               'deg)"><path d="M12 4l7 15-7-4.4L5 19z"/></svg>';
+      }
+
+      function mcSetSlot(i, img){
+        mcSlots[i] = img;
+        /* ★ 缩略图只在换图时算一次：每次渲染都重算九个 120px canvas 是
+           「能用但每点一下就顿一下」的做法。 */
+        mcThumbs[i] = img ? TaskMascotFit.thumbOf(img, 120) : null;
+      }
+
+      function renderMcCells(){
+        if (!mcCells) return;
+        var i, any = false;
+        var frag = document.createDocumentFragment();
+        for (i = 0; i < 9; i++) {
+          var b = document.createElement("button");
+          b.type = "button";
+          b.setAttribute("data-i", i);
+          b.className = mcSlots[i] ? "has" : "";
+          b.innerHTML = mcCellSvg(i);
+          if (mcThumbs[i]) {
+            var el = document.createElement("img");
+            el.src = mcThumbs[i];
+            b.appendChild(el);
+            any = true;
+          }
+          frag.appendChild(b);
+        }
+        while (mcCells.firstChild) mcCells.removeChild(mcCells.firstChild);
+        mcCells.appendChild(frag);
+        /* 「左右对调」在没图时没有意义（换了两边都是空） */
+        if (mcFlip) mcFlip.hidden = !any;
+      }
+
+      /* 文件 → 已解码的 Image。★ 用 createObjectURL 而不是 FileReader：
+         前者不把整张图读进内存字符串（用户可能一次丢九张手机原图进来）。
+         ★★ 与老路的一个关键区别：**不再 cover 裁切**。裁掉一块是永久损失
+         （裁到哪一侧就是哪一侧的耳朵没了），而留白由对齐那一步自己收掉。 */
+      function mcLoad(file, cb, bad){
+        if (!file || (file.type && file.type.indexOf("image/") !== 0)) {
+          return bad("这不像是一张图片");
+        }
         if (!window.URL || !URL.createObjectURL) return bad("这个环境读不了本地文件");
         var url = URL.createObjectURL(file);
         var im = new Image();
         im.onload = function(){
-          var cv = null;
-          try {
-            var S = TaskMascot.CUSTOM.SRC;
-            var r = TaskMascot.coverRect(im.width, im.height, S);
-            cv = document.createElement("canvas");
-            cv.width = S;
-            cv.height = S;
-            var g = cv.getContext("2d");
-            /* ★ 先铺一层白：透明 PNG 直接画上去，在深色主题里背后是深底，
-               看着像"图坏了"。铺白之后至少是一张正常的方图。 */
-            g.fillStyle = "#fff";
-            g.fillRect(0, 0, S, S);
-            g.imageSmoothingEnabled = true;
-            g.imageSmoothingQuality = "high";
-            g.drawImage(im, r.x, r.y, r.w, r.h);
-          } catch (e) {
-            cv = null;
-          }
           URL.revokeObjectURL(url);
-          if (cv) cb(cv);
-          else bad("这张图处理不了");
+          cb(im);
         };
         im.onerror = function(){
           URL.revokeObjectURL(url);
@@ -1842,58 +2111,153 @@ function aiBind(){
         im.src = url;
       }
 
-      /* 烘两张 3×3 雪碧 + 一张缩略图。
-         ★ 质量档会在超出体积预算时自动降一档：这两张 dataURL 要进 storage，
+      /* 一批文件 → 一排 Image。★ 失败只报一次：九张里有两张坏的时候，
+         不这么写会连弹两个 toast，后一个把前一个顶掉，用户只看到最后一条。 */
+      function mcLoadAll(files, from, done, bad){
+        var list = [].slice.call(files || []).slice(0, 9 - from);
+        if (!list.length) return bad("没选到文件");
+        var got = new Array(list.length), left = list.length, dead = false;
+        list.forEach(function(f, k){
+          mcLoad(f, function(im){
+            if (dead) return;
+            got[k] = im;
+            if (--left === 0) done(got);
+          }, function(msg){
+            if (dead) return;
+            dead = true;
+            bad(msg);
+          });
+        });
+      }
+
+      /* 把一批图从 from 格开始铺。★ from === 0 时先清空九格：不清的话
+         「原来有 9 格、这次只选 2 张」会让后 7 格留着上一次的图 ——
+         而用户以为他刚换了一整张新的。 */
+      function mcFillFrom(from, imgs){
+        var i;
+        if (from === 0) for (i = 0; i < 9; i++) mcSetSlot(i, null);
+        for (i = 0; i < imgs.length && from + i < 9; i++) mcSetSlot(from + i, imgs[i]);
+      }
+
+      /* 九格 → 两张 3×3 雪碧 + 一张缩略图。
+         ★ 对准与拼装全走 TaskMascotFit.buildDirs（一处实现，那边有单测）。
+         ★★ 表情拿「九张里最正面的那张」烘（fit.base）—— 用户不用多画九张表情，
+           跟老路一样只出一张脸。用 fit.base 而不是写死第 4 格：缺正脸时 base
+           已经退到左 / 右了；写死第 4 格的话「只传了一侧脸」就没有表情。
+         ★ 质量档会在超出体积预算时降一档：这两张 dataURL 要进 storage，
            还要跟着快照过 native messaging（Chrome 那条通道单条消息上限 1MB）。 */
-      function mcBake(cv){
-        function sheet(plan, q){
-          var box = TaskMascot.CUSTOM.SRC * 3;
-          var c2 = document.createElement("canvas");
-          c2.width = box;
-          c2.height = box;
-          var g2 = c2.getContext("2d");
-          g2.imageSmoothingEnabled = true;
-          g2.imageSmoothingQuality = "high";
-          TaskMascot.drawAtlas(g2, cv, plan, TaskMascot.CUSTOM.SRC);
-          return c2.toDataURL("image/webp", q);
-        }
-        var dirs = sheet(TaskMascot.CUSTOM.DIRS, 0.82);
-        var reacts = sheet(TaskMascot.CUSTOM.REACTS, 0.82);
+      function mcBake(){
+        var S = TaskMascot.CUSTOM.SRC;
+        var fit = TaskMascotFit.buildDirs(mcSlots, S);
+        if (!fit) return null;
+        var face = fit.cells[fit.base];
+        if (!face) return null;
+        var q = 0.82;
+        var dirs = fit.dirs.toDataURL("image/webp", q);
+        var rc = document.createElement("canvas");
+        rc.width = S * 3;
+        rc.height = S * 3;
+        var rg = rc.getContext("2d");
+        rg.imageSmoothingEnabled = true;
+        rg.imageSmoothingQuality = "high";
+        TaskMascot.drawAtlas(rg, face, TaskMascot.CUSTOM.REACTS, S);
+        var reacts = rc.toDataURL("image/webp", q);
         if (dirs.length + reacts.length > MC_IMG_MAX) {
-          dirs = sheet(TaskMascot.CUSTOM.DIRS, 0.6);
-          reacts = sheet(TaskMascot.CUSTOM.REACTS, 0.6);
+          q = 0.6;
+          dirs = fit.dirs.toDataURL("image/webp", q);
+          reacts = rc.toDataURL("image/webp", q);
         }
+        /* 缩略图：从正脸那格里**裁掉 BASE 内缩出来的留白**再画 —— 不裁的话，
+           自定义角色的缩略图会比内置那 58 个都小一圈（差的正是那 20%）。 */
         var T = TaskMascot.CUSTOM.THUMB;
+        var inner = S * TaskMascot.CUSTOM.BASE;
+        var off = (S - inner) / 2;
         var tc = document.createElement("canvas");
         tc.width = T;
         tc.height = T;
-        tc.getContext("2d").drawImage(cv, 0, 0, T, T);
-        return { dirs: dirs, reacts: reacts, thumb: tc.toDataURL("image/webp", 0.85) };
+        tc.getContext("2d").drawImage(face, off, off, inner, inner, 0, 0, T, T);
+        return { dirs: dirs, reacts: reacts, thumb: tc.toDataURL("image/webp", 0.85),
+                 maxUp: fit.maxUp };
+      }
+
+      /* 烘 + 整块写 storage。★ 任何一步失败都只 toast 一句话，
+         **绝不写半份配置**（写进去就是一张空白球）。 */
+      function mcCommit(okMsg){
+        var bun;
+        try { bun = mcBake(); } catch (e) { bun = null; }
+        if (!bun) return false;
+        /* ★ 放大超上限时**换掉**那句成功文案，而不是再补一条：两次 toast 会互相
+           顶掉，用户只看到最后一条 —— 而他最需要知道的正是「会有点糊」。 */
+        if (bun.maxUp > TaskMascotFit.MAX_UP) {
+          okMsg = "有张图被放大了 " + bun.maxUp.toFixed(1) + " 倍，会有点糊";
+        }
+        saveMc({ char: "custom", custom: {
+          dirs: bun.dirs, reacts: bun.reacts, thumb: bun.thumb,
+          /* sig：换图必须刷新它。桌面球的快照指纹只认 char，而 char 一直是
+             "custom" —— 不换 sig 的话「换了一张自己的图」在球上完全无感。 */
+          sig: String(Date.now())
+        } }, okMsg);
+        renderMcGrid();
+        return true;
+      }
+
+      if (mcCells) {
+        mcCells.addEventListener("click", function(e){
+          var b = e.target && e.target.closest ? e.target.closest("button") : null;
+          if (!b || !mcFile) return;
+          var i = Number(b.getAttribute("data-i"));
+          mcFrom = (i >= 0 && i < 9) ? i : 0;
+          mcFile.click();
+        });
       }
 
       if (mcUp && mcFile) {
-        mcUp.addEventListener("click", function(){ mcFile.click(); });
+        mcUp.addEventListener("click", function(){
+          mcFrom = 0;
+          mcFile.click();
+        });
         mcFile.addEventListener("change", function(){
-          var f = mcFile.files && mcFile.files[0];
-          /* ★ 立刻清空：不清的话「再传同一张图」不会触发 change（值没变），
+          var files = mcFile.files;
+          /* ★ 立刻清空：不清的话「再传同一批图」不会触发 change（值没变），
              用户会以为按钮坏了。 */
           mcFile.value = "";
-          mcNorm(f, function(cv){
-            var bun;
-            try {
-              bun = mcBake(cv);
-            } catch (e) {
-              toast("这张图太大了，换一张小点的试试");
-              return;
-            }
-            saveMc({ char: "custom", custom: {
-              dirs: bun.dirs, reacts: bun.reacts, thumb: bun.thumb,
-              /* sig：换图必须刷新它。桌面球的快照指纹只认 char，而 char 一直是
-                 "custom" —— 不换 sig 的话「换了一张自己的图」在球上完全无感。 */
-              sig: String(Date.now())
-            } }, "换成了你自己的图");
-            renderMcGrid();
+          mcLoadAll(files, mcFrom, function(imgs){
+            mcFillFrom(mcFrom, imgs);
+            renderMcCells();
+            if (mcMake) mcMake.hidden = false;
+            if (!mcCommit("换成了你自己的图")) toast("这些图处理不了，换几张试试");
           }, function(msg){ toast(msg); });
+        });
+      }
+
+      if (mcSheetBtn && mcSheetFile) {
+        mcSheetBtn.addEventListener("click", function(){ mcSheetFile.click(); });
+        mcSheetFile.addEventListener("change", function(){
+          var f = mcSheetFile.files && mcSheetFile.files[0];
+          mcSheetFile.value = "";
+          mcLoad(f, function(im){
+            /* ①C 的另一半：一张 3×3 整图切九刀。★ 这正是原项目 tiles() 的全部
+               作用 —— 它下游的对齐**不关心**这九块来自一张图还是九个文件，
+               所以两条入口共用同一条路。 */
+            var nine = TaskMascotFit.splitSheet(im);
+            if (!nine) return toast("这张图太小了，切不出九格");
+            mcFillFrom(0, nine);
+            renderMcCells();
+            if (mcMake) mcMake.hidden = false;
+            if (!mcCommit("换成了你自己的图")) toast("这张图处理不了，换一张试试");
+          }, function(msg){ toast(msg); });
+        });
+      }
+
+      if (mcFlip) {
+        mcFlip.addEventListener("click", function(){
+          /* ★ 只换格序、不碰任何图像 —— 所以「九格预览」和「烘出来的雪碧」
+             不可能是两套口径。原项目 52 个角色里有 1 个左右画反，而
+             shift / palette / width / overlap 四个指标**全绿**，只能靠人眼发现。 */
+          var a = TaskMascotFit.swapColumns(mcSlots);
+          for (var i = 0; i < 9; i++) mcSetSlot(i, a[i]);
+          renderMcCells();
+          mcCommit("左右对调了");
         });
       }
 
@@ -1905,6 +2269,12 @@ function aiBind(){
                这里跟着换；写死就是第二个口径。 */
           delete mcCfg.custom;
           saveMc({ char: TaskMascot.DEFAULT.char }, "已删掉你自己的图");
+          /* ★ v0.28.0：九格面板也要跟着清空、收起来 —— 不清的话，删完之后
+             面板里还摆着那九张缩略图，看着像「删了还在」；而下次再点某一格
+             换图，会拿一堆已经删掉的图去重烘。 */
+          for (var i = 0; i < 9; i++) mcSetSlot(i, null);
+          renderMcCells();
+          if (mcMake) mcMake.hidden = true;
           renderMcGrid();
         });
       }
