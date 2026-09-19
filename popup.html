@@ -764,7 +764,7 @@ html.has-showpicker .cedit .datewrap input[type="date"]::-webkit-calendar-picker
    全纯 CSS，零依赖、无 canvas —— MV3 默认 CSP 下不需要任何额外许可。
    时序刻意交错（落位 0~340ms / 勾 100~400ms / 划掉 260~520ms / 粒子 0~560ms），
    读起来才像「一件事的四个阶段」，四件事同时炸只会显得吵。 */
-@keyframes landB{0%{transform:scale(1.075)}38%{transform:scale(.978)}100%{transform:scale(1)}}
+@keyframes landB{0%{transform:scale(1.16)}34%{transform:scale(.938)}68%{transform:scale(1.035)}100%{transform:scale(1)}}
 /* 完成色环向外扩一圈再消失 —— 位移之外再补一个「扩散」信号。
    只靠一个 1.045 的 scale 回弹太安静，几乎看不出来（这是「像没反应」的一半原因）。
    ★★ v0.20.0：从绿改成灰紫。**这里是写死的 rgb 三元组，不跟 --s-done 走** ——
@@ -783,6 +783,25 @@ html.has-showpicker .cedit .datewrap input[type="date"]::-webkit-calendar-picker
   70%{opacity:.85}
   100%{transform:translate(calc(-50% + var(--dx)),calc(-50% + var(--dy))) scale(.3);opacity:0}
 }
+/* ★ v0.30.0：**第二圈环**。第一圈（ringPop）只扩 8px，远到几乎看不见。
+   ★★ 为什么不再写一条 box-shadow 动画挂到 .land-B 上：两个动画改**同一个属性**时，
+   后者整条覆盖前者，不会叠加 —— 想要两圈，只能靠两个**元素**。
+   所以它是一个插进卡片的 .ripple 子元素：自己带一圈更远（20px）、更淡的环，
+   比第一圈晚 110ms 出发。错开才读作「荡开的水波」，同时出发只是更粗的一圈。 */
+@keyframes rippleOut{
+  0%{box-shadow:0 0 0 0 rgba(142,136,184,.44)}
+  100%{box-shadow:0 0 0 20px rgba(142,136,184,0)}
+}
+/* ★ v0.30.0：一道高光斜着扫过卡片 —— 整段反馈里**唯一有方向**的信号。
+   环和粒子都是「以卡片为中心向外扩」，看久了会彼此归一；一道从左扫到右的光
+   把「这件事做完了」讲成了一个**动作**，而不只是一个状态。 */
+@keyframes sheenSweep{
+  0%{transform:translateX(-140%) rotate(18deg);opacity:0}
+  20%{opacity:.62}
+  100%{transform:translateX(320%) rotate(18deg);opacity:0}
+}
+/* 勾描完之后弹一下：描线是「确认」，弹是「高兴」。只描不弹，只是打了个勾。 */
+@keyframes tickPop{0%{transform:scale(1)}38%{transform:scale(1.42)}100%{transform:scale(1)}}
 
 .card .tick{
   position:absolute;top:4px;right:4px;width:13px;height:13px;
@@ -794,10 +813,10 @@ html.has-showpicker .cedit .datewrap input[type="date"]::-webkit-calendar-picker
    勾保持显示，状态完全一致。 */
 .card.is-done .tick{opacity:1}
 .card.is-done:not(.ticked) .tick path{stroke-dashoffset:0}
-.card.ticked .tick{opacity:1}
+.card.ticked .tick{opacity:1;animation:tickPop .46s .16s cubic-bezier(.34,1.56,.64,1) both}
 .card.ticked .tick path{animation:tickDraw .3s .1s ease forwards}
 
-.card.land-B{animation:landB .42s cubic-bezier(.32,.72,0,1) both,ringPop .62s ease-out both;z-index:3}
+.card.land-B{animation:landB .5s cubic-bezier(.32,.72,0,1) both,ringPop .62s ease-out both;z-index:3}
 /* ★ 已完成列的卡片整体压了 opacity:.72（「结束的东西退到后面去」）。刚完成那张要播反馈，
    压着 0.72 看动画等于白播 —— 这里给足不透明度。选择器要比上面那条长才压得住。 */
 .col[data-status="done"] .card.land-B{opacity:1}
@@ -814,6 +833,26 @@ html.has-showpicker .cedit .datewrap input[type="date"]::-webkit-calendar-picker
   transform:translate(-50%,-50%);
   animation:sparkOut var(--dur,560ms) cubic-bezier(.22,.61,.36,1) forwards;
 }
+/* 两圈环里的第二圈：与卡片同形的一层空壳，只负责带 box-shadow。
+   ★ pointer-events:none 是硬要求不是优化：它铺满整张卡，不设这条卡片立刻
+     点不动、拖不走 —— 「新加的装饰层悄悄吃掉交互」这个坑本仓库栽过不止一次。 */
+.card .ripple{
+  position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  animation:rippleOut .66s .11s ease-out both;
+}
+/* 高光条：★ 裁切交给这一层自己（overflow:hidden + 圆角继承），
+   而不是给卡片加 overflow:hidden —— 卡片在拖拽态是 fixed、编辑态会撑开成表单，
+   加 overflow 会把这两态都裁掉。这就是高光必须走 DOM 元素的原因之一。 */
+.card .sheen{
+  position:absolute;inset:0;border-radius:inherit;overflow:hidden;pointer-events:none;
+}
+/* ★ 门只禁 .card::before（「卡片无形」），不禁 .card .sheen::before ——
+   这里是**子元素**的伪元素，裁在 .sheen 自己的框里，不会给卡片铺任何底色。 */
+.card .sheen::before{
+  content:"";position:absolute;left:0;top:-50%;width:36%;height:200%;
+  background:linear-gradient(90deg,rgba(255,255,255,0),rgba(255,255,255,.72),rgba(255,255,255,0));
+  animation:sheenSweep .62s .06s cubic-bezier(.4,0,.2,1) both;
+}
 
 /* 减少动态效果：不是「关掉反馈」，是换一种不动的表达 ——
    勾直接出现、划掉直接画上。信息一点没少，只是没有位移。 */
@@ -827,6 +866,9 @@ html.has-showpicker .cedit .datewrap input[type="date"]::-webkit-calendar-picker
   .card.dragging{transform:none}
   .card.land-B{animation:none}
   .card .spark{display:none}
+  .card .ripple{display:none}
+  .card .sheen{display:none}
+  .card.ticked .tick{animation:none}
   .card.ticked .tick path{animation:none;stroke-dashoffset:0}
 }
 

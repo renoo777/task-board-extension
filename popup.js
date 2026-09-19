@@ -1111,29 +1111,52 @@
    收敛到紫蓝一系（仍是 6 颗，视觉上靠明度差区分，不靠色相差）。 */
   var SPARK_COLORS = ["#7c6ae0","#8f86f0","#6f8ef0","#a79cf4","#8ea6f2","#b4aaf6"];
 
-  /* 8 颗粒子，六向散开，半径压在 40px 内 —— 不做满屏彩带。
-     这是个每天会做二十次的动作，不是一次成就解锁：
-     每次完成都放烟花，第三天就会觉得吵；吵到用户去关掉它，这个反馈就等于白做。 */
+  /* ★ v0.30.0：14 颗粒子、**椭圆**散开（横向 ×1.3 / 纵向 ×0.72）。
+     ★★ 为什么是椭圆不是正圆：卡片实测约 140×60，纵向只有 60 ——
+     纵向飞 46px 就会撞到列的上下边界，被 .col 的 overflow-y:auto 裁掉；
+     而横向还有富余。椭圆用同样的力跑得更远，还不会被裁。
+     ★ 仍然不做满屏彩带：这是个每天做二十次的动作，不是一次成就解锁。
+     这次加的是**密度与距离**（14 颗、飞到约 60px），不是**面积**（全屏）——
+     吵人的是满屏乱飞，不是卡片周围这一小簇。 */
   function sparks(card){
-    for (var i = 0; i < 8; i++) {
-      var a = (Math.PI * 2 * i) / 8 + Math.random() * 0.45;
-      var d = 38 * (0.62 + Math.random() * 0.55);
+    for (var i = 0; i < 14; i++) {
+      var a = (Math.PI * 2 * i) / 14 + Math.random() * 0.42;
+      var d = 46 * (0.6 + Math.random() * 0.62);
       var s = document.createElement("i");
       s.className = "spark";
-      s.style.setProperty("--dx", (Math.cos(a) * d).toFixed(1) + "px");
-      s.style.setProperty("--dy", (Math.sin(a) * d).toFixed(1) + "px");
-      s.style.setProperty("--s", (3.6 + Math.random() * 2.2).toFixed(1) + "px");
+      s.style.setProperty("--dx", (Math.cos(a) * d * 1.3).toFixed(1) + "px");
+      s.style.setProperty("--dy", (Math.sin(a) * d * 0.72).toFixed(1) + "px");
+      s.style.setProperty("--s", (4.2 + Math.random() * 2.8).toFixed(1) + "px");
       s.style.setProperty("--c", SPARK_COLORS[i % SPARK_COLORS.length]);
-      s.style.setProperty("--dur", (520 + Math.random() * 120).toFixed(0) + "ms");
+      s.style.setProperty("--dur", (620 + Math.random() * 200).toFixed(0) + "ms");
       card.appendChild(s);
     }
-    // 粒子纯装饰，动画完就摘掉，别在卡片里留 DOM 垃圾（每完成一次留 8 个，很快就是一堆）
-    setTimeout(function(){
-      var dead = card.querySelectorAll(".spark");
-      for (var k = 0; k < dead.length; k++) {
-        if (dead[k].parentNode) dead[k].parentNode.removeChild(dead[k]);
-      }
-    }, 1200);
+    // 粒子纯装饰，动画完就摘掉，别在卡片里留 DOM 垃圾（每完成一次留 14 个，很快就是一堆）
+    setTimeout(function(){ clearFx(card, ".spark"); }, 1500);
+  }
+
+  /* 装饰层统一清掉。三个都是「每次完成插一次」的东西：不摘会越积越多，
+     而且卡片节点会被复用（拖出去再拖回来），残留的装饰会跟着一起回来。 */
+  function clearFx(card, sel){
+    var dead = card.querySelectorAll(sel);
+    for (var k = 0; k < dead.length; k++) {
+      if (dead[k].parentNode) dead[k].parentNode.removeChild(dead[k]);
+    }
+  }
+
+  /* ★ v0.30.0：第二圈环 + 一道高光。
+     为什么这两个是**插元素**、而不是再加两条 CSS 动画挂到 .land-B 上：
+       ① 环 —— 两个动画改同一个 box-shadow，后者整条覆盖前者，不会叠加；
+       ② 高光 —— 卡片不能加 overflow:hidden（拖拽态 fixed、编辑态撑开都会被裁），
+          所以裁切只能交给一个自己带 overflow 的子元素。 */
+  function fx(card){
+    var r = document.createElement("i");
+    r.className = "ripple";
+    card.appendChild(r);
+    var sh = document.createElement("i");
+    sh.className = "sheen";
+    card.appendChild(sh);
+    setTimeout(function(){ clearFx(card, ".ripple,.sheen"); }, 1500);
   }
 
   /* 播放完成反馈。必须在 render() 之后调用 —— 那时这张卡才是新建出来的。 */
@@ -1149,6 +1172,7 @@
 
     card.classList.add("land-B");
     sparks(card);
+    fx(card);   // 第二圈环 + 高光（reduceMotion 已在上面 return 过，这里不用再判一次）
 
     // 动画类用完即撤：不撤的话这张卡被复用（拖出去再拖回来）不会重播
     setTimeout(function(){
