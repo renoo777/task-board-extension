@@ -472,6 +472,28 @@ body{
   border:1px solid var(--line2);background:var(--card) no-repeat center/contain;
 }
 .mcname{font-size:13px;color:var(--ink);font-weight:500;letter-spacing:.2px}
+/* ★★★ v0.29.0：自定义那一项的名字**点一下能改**（.ed 由 paintMc 加，内置角色没有）。
+   ★ 用虚下划线当"这里能点"的线索，而不是加一句说明文字 —— 界面上不放解释性文案；
+     但也**必须**有个看得见的线索，否则"能改名"这件事等于不存在。
+   ★ 下划线不占布局（text-decoration 不进盒模型），所以这一行加进去，
+     那一行的像素位置一个都没动。 */
+.mcname.ed{cursor:pointer}
+.mcname.ed:hover{
+  text-decoration:underline;text-decoration-style:dotted;
+  text-underline-offset:3px;
+}
+/* 改名时临时顶上的输入框（提交/取消即消失，不是常驻控件） */
+.mcin{
+  appearance:none;-webkit-appearance:none;
+  font-family:inherit;font-size:13px;font-weight:500;letter-spacing:.2px;
+  color:var(--ink);background:var(--card);
+  border:1px solid var(--solid);border-radius:7px;padding:3px 7px;width:104px;
+}
+/* ★★★ v0.29.0：三个动作按钮独立成行，排在角色网格**之下**
+   （老大：「这个上传图标可以放到最下面去」）。
+   ★ 只挪位置、不改语义：`.mcbar` 里剩下的"当前是谁 + 多大"仍然跟着吉祥物开关显隐，
+     而这三个按钮本来也在那个显隐范围里（.mcacts 在 #mcPick 之内）。 */
+.mcacts{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}
 /* 分段控件（小 / 中 / 大）。★ 不用原生 radio：三个中文单字装不进圆点，
    而且这是「档位」不是「选项」，分段才符合它是一次三选一的语义。 */
 .seg{
@@ -1135,11 +1157,16 @@ body{
         </div>
 
         <div id="mcPick">
-          <div class="mcbar">
+          <!-- ★★★ v0.29.0：这一行**只留「当前是谁 + 多大」**，三个动作按钮挪到
+               角色网格**下面**去了（老大：「这个上传图标可以放到最下面去」）。
+               ★ 为什么不是整行一起下去：`#mcPick` 是**跟着吉祥物开关显隐**的
+                 （关掉吉祥物，这一整块就不该在）。脸和名字搬不进上面的 .wrow——
+                 搬进去就得单独给它们套一套显隐，否则「关掉吉祥物，脸还挂在上面」。
+                 所以这一行留在原处、只把按钮摘出去：界面上的净变化正好是
+                 「三个按钮下移」，其余一个像素都没动。 -->
+          <div class="mcbar" id="mcBar">
             <span class="mcface" id="mcFace"></span>
             <span class="mcname" id="mcName">狐狸</span>
-            <button type="button" class="btn sm" id="mcUp">上传图片</button>
-            <button type="button" class="btn sm" id="mcDel" hidden>删掉</button>
             <span class="seg" id="mcSize">
               <button type="button" data-sz="56">小</button>
               <button type="button" data-sz="72">中</button>
@@ -1147,12 +1174,25 @@ body{
             </span>
           </div>
           <div class="mcgrid" id="mcGrid"></div>
+          <!-- ★★★ v0.29.0：三个动作按钮独立成一行，排在角色网格**之下**。
+               ★ 为什么「上传图片」和「编辑」必须分开成两个按钮：它们是
+                 **两种相反的意图** —— 上传＝再加一张新的（老大要的「多项保存」），
+                 编辑＝改当前这一张。v0.28.x 只有「上传图片」一个入口，所以
+                 第二次上传只能把第一张顶掉（因为那时候 `mcCfg.custom` 只有一个位置）。
+                 同一个坑的另一副面孔见 mcFrom 那段注释（点按钮 vs 点某一格）。 -->
+          <div class="mcacts" id="mcActs">
+            <button type="button" class="btn sm" id="mcUp">上传图片</button>
+            <button type="button" class="btn sm" id="mcEdit" hidden>编辑</button>
+            <button type="button" class="btn sm" id="mcDel" hidden>删掉</button>
+          </div>
           <!-- ★ v0.28.0 九格收图。默认收着（`hidden`）—— 绝大多数情况下用户是
                「换一张图」而不是「逐格微调」，一进来就摆九个空格占地方，
                反而把上面那个角色网格挤下去了。
-               ★ 面板出现只有两个时机：本会话里传过图（选完就展开）。
-               它**不回填**已有自定义图 —— 回填的是已经对齐过的成品，
-               拿它再走一遍对齐 = 二次缩放，越改越小。 -->
+               ★ 面板出现只有两个时机：本会话里传过图（选完就展开）、或点了「编辑」。
+               ★★ v0.29.0：「编辑」回填的是**源图**（老大的 (b)：传完之后还要能改）。
+                 理由与实测都在 manage.js 的 `mcRefill` 上面。★ 特别提醒那一处写着
+                 **「不是越改越小」**：实测雪碧格里人物占比倍率是 1.000 / 1.009 / 1.009，
+                 不缩 —— 这条注释原来那版写的是"二次缩放，越改越小"，是推理，已按实测改掉。 -->
           <div id="mcMake" hidden>
             <div class="mc9" id="mcCells"></div>
             <div class="row wrap" style="margin-top:10px">
@@ -1497,7 +1537,7 @@ body{
              真正的版本号由 manage.js 从 manifest 读出来覆盖 ——
              写死在 HTML 里等于第二个版本号出处，manifest 一升版这里就开始说谎，
              而且没有任何症状。 -->
-        <div class="ab-ver"><span id="abVer">v0.28.1</span></div>
+        <div class="ab-ver"><span id="abVer">v0.29.0</span></div>
       </div>
     </section>
 

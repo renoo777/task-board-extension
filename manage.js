@@ -11,6 +11,63 @@
      在这儿再写一遍字符串，就是「球上显示开着、设置页显示关着」那类
      没人会去查的不一致的起点。加载顺序保证 Notify 已经在了（见 manage.html）。 */
   var NTKEY = (typeof Notify !== "undefined" && Notify.KEY) ? Notify.KEY : "taskboard.notify";
+  /* ★★★ v0.29.0：自定义**库**（存多个自定义形象）开一个**新 key** ——
+     `taskboard.mascot.custom` 的形状**一个字不改**。理由有两条硬的：
+       ① 那一份是共享面：mascot.js 的 readConfig/readCustom、网页球、桌面球、
+          快照链路全按它的形状读。动它就要重编桌面球 exe，而且共享面两边
+          必须逐字节相同（`desktop-ball-tauri` 里那条）。
+       ② 快照（native messaging，单条上限 1 MB）里带的是 readMc() 解出来的
+          **当前那一个** custom。库要是并进 mascot 配置，就等于每次推快照都把
+          一两 MB 的图过一遍那条通道。
+     ★ 库只在设置页读写：background.js 的 storage 取值清单里**没有**这个 key。 */
+  var LIBKEY = "taskboard.mc.customs";
+  /* 自定义那一组/那一格的显示名。★ 用**常量**而不是在几处各写一遍字面量：
+     「设置页那格叫一个名字、快照里叫另一个」是那种没人会去查的不一致。 */
+  var CUSTOM_GROUP = "自定义";
+  var CUSTOM_NAME = "你自己的图";
+  /* 库的条数上限。★ 定这个数的依据是**字节**不是审美：每项 = 源图九宫格
+     （480² webp）+ 成品两张雪碧（480² webp，硬上限 400 KB）+ 缩略图（68²），
+     典型 100~150 KB。storage.local 配额 10 MB（manifest 里**没有**
+     unlimitedStorage），20 项 ≈ 2~3 MB，留下了余量。 */
+  var MC_LIB_MAX = 20;
+  /* 库里那一项没有缩略图时用的 1×1 透明 GIF。
+     ★ 为什么需要它：网格渲染写的是 `c.thumb ? c.thumb : MCBASE + "/thumb/" + c.id + ".webp"`，
+       而自定义项的 id 形如 `custom:<sig>` —— 没有 thumb 时那行会拼出一个
+       必然 404 的路径，屏幕上就是格子角上一个碎图标。 */
+  var MC_BLANK = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+
+  /* 库的清洗。★ 为什么必须清洗而不是直接信 storage：这个 key 是我们自己写的，
+     但**用户可能装过旧版、也可能手工改过**；一条形状不对的记录会让 renderMcGrid
+     抛错，而那个错发生在绑定完成之前 —— 屏幕上只表现为「角色网格是空的」，
+     连吉祥物开关都跟着失灵，控制台里那句才是真相。
+     ★ 顺手按 sig 去重：sig 是「哪一项」的唯一标识，两条同 sig 的记录会让
+       「点第 2 项」和「点第 1 项」选中同一个东西（点谁都是它，且不报错）。 */
+  function mcLibClean(v){
+    var out = [];
+    if (!Array.isArray(v)) return out;
+    v.forEach(function(x){
+      if (!x || typeof x !== "object") return;
+      if (typeof x.sig !== "string" || !x.sig) return;
+      /* 两张成品雪碧是这一项的**实体**（没有它这一项根本画不出来） */
+      if (typeof x.dirs !== "string" || !x.dirs) return;
+      if (typeof x.reacts !== "string" || !x.reacts) return;
+      for (var i = 0; i < out.length; i++) if (out[i].sig === x.sig) return;
+      out.push({
+        sig: x.sig,
+        name: (typeof x.name === "string" && x.name) ? x.name : CUSTOM_NAME,
+        /* src = 九张**归一化后的源图**拼成的 3×3（480² webp）。「编辑」靠它回填。
+           ★ 缺失是合法状态：v0.28.x 存下来的那一张只有成品、没有源图。 */
+        src: (typeof x.src === "string" && x.src) ? x.src : null,
+        /* had = 当初哪几格有图（9 个 "0"/"1"）。回填时用它把空格还原成空格 ——
+           源图里空格是透明的，只看像素分不出「这格本来就没图」和「这格是张透明图」。 */
+        had: (typeof x.had === "string" && x.had.length === 9) ? x.had : "111111111",
+        dirs: x.dirs,
+        reacts: x.reacts,
+        thumb: (typeof x.thumb === "string") ? x.thumb : ""
+      });
+    });
+    return out.slice(0, MC_LIB_MAX);
+  }
 
   /* 偏好读写的口径必须和弹窗那边**完全一致**（同一个 key、同一个默认值）：
      两处默认值不一样的话，只会出现「设置页显示开着、弹窗里其实没开」这种查半天的怪事。 */
@@ -1695,7 +1752,7 @@ function aiBind(){
 
   /* ---------- 启动 ---------- */
   Promise.all([Store.get(PKEY), Store.get(), Store.get(PREFKEY), Store.get(WBKEY), Store.get(MCKEY),
-               Store.get(NTKEY)]).then(function(r){
+               Store.get(NTKEY), Store.get(LIBKEY)]).then(function(r){
     var list = r[0], data = r[1];
     if (Array.isArray(list) && list.length) projects = list;
     if (data && Array.isArray(data.tasks)) {
@@ -1810,6 +1867,9 @@ function aiBind(){
       var mcSizeEl = document.getElementById("mcSize");
       var mcGrid = document.getElementById("mcGrid");
       var mcDel = document.getElementById("mcDel");
+      /* ★ v0.29.0：「编辑」是**新按钮**，跟「上传图片」是两种相反的意图 ——
+         上传 = 再加一张新的，编辑 = 改当前这一张。见 mcActs 那段 HTML 注释。 */
+      var mcEdit = document.getElementById("mcEdit");
       var mcFile = document.getElementById("mcFile");
       var mcUp = document.getElementById("mcUp");
       /* ★ v0.28.0 九格收图用的那几个（见下面「九格收图」那一段） */
@@ -1828,10 +1888,13 @@ function aiBind(){
       var talkBox = document.getElementById("talkOn");
       var MCBASE = "mascots";
       var mcNames = {};        /* id → 中文名（渲染网格时顺手记下，paint 要用） */
-      /* 自定义那一组/那一格的显示名。★ 用**常量**而不是在三处各写一遍字面量：
-         「设置页那格叫一个名字、快照里叫另一个」是那种没人会去查的不一致。 */
-      var CUSTOM_GROUP = "自定义";
-      var CUSTOM_NAME = "你自己的图";
+      /* ★★★ v0.29.0：自定义**库**。`CUSTOM_GROUP` / `CUSTOM_NAME` / `LIBKEY` /
+         `MC_LIB_MAX` / `MC_BLANK` / `mcLibClean` 全在**模块级**（文件抬头那段）——
+         `CUSTOM_NAME` 原来是这儿块内的一个 var，挪上去是为了让 mcLibClean 用得上它，
+         顺手消掉「同一个名字两处各写一遍」。
+         ★ 清洗一定要在**这里**做完：下面 renderMcGrid / paintMc / 点格子的绑定
+           都直接信 mcLib 里的项，一条坏记录会让绑定断在半路。 */
+      var mcLib = mcLibClean(r[6]);
       /* 两张雪碧 dataURL 合计的体积上限（本钱：storage 一处、快照一处）。
          超了就降一档质量重烘，不再往上加。 */
       var MC_IMG_MAX = 400000;
@@ -1873,6 +1936,211 @@ function aiBind(){
            比 undefined 被当函数调用（又是一个 ReferenceError/TypeError）稳。 */
       var renderMcGrid = function(){};
 
+      /* ---------------- 自定义库（v0.29.0） ----------------
+         ★ 要解决的问题（老大原话）："我上传一张图片做成自定义之后，如果想做第二个自定义，
+           它会把第一个覆盖掉，没办法保存"。病根是 `mcCfg.custom` **天生只能装一个对象**，
+           第二次上传必然覆盖 —— 不是没收好，是**没地方放**。
+         ★ 所以做法是：那个字段**一个字不改**，另开一个 key（LIBKEY）存"库"。
+           库里每一项 = 一份成品（dirs/reacts/thumb，形状跟 mcCfg.custom 完全相同）
+                      + 一份源图（src）—— 后者是「编辑」能成立的前提。
+         ★ 「当前是哪一个」由 `mcCfg.custom.sig` 认。库里每一项的 sig 唯一，
+           `mcSelect()` 就是把某一项的成品整个搬进 mcCfg.custom —— **纯拷贝、不重烘**：
+           重烘要走 canvas + 异步解码，切一次要等一次，而且失败路径又是一堆分支。 */
+
+      function mcLibFind(sig){
+        for (var i = 0; i < mcLib.length; i++) if (mcLib[i].sig === sig) return i;
+        return -1;
+      }
+
+      /* 当前 `mcCfg.custom` 对应库里哪一项（-1 = 不在库里，比如它还没迁进来）。
+         ★ 判据是 sig **不是**下标：下标会因为中间删掉一项而整体挪位，
+           而 sig 是这一项的身份证 —— 用下标的话「删了第 2 项，当前还指着第 2 项」
+           会静默地指向原来第 3 项，屏幕上就是"我删了 A，结果跳到了 C"。 */
+      function mcCurIdx(){
+        return (mcCfg.custom && mcCfg.custom.sig) ? mcLibFind(mcCfg.custom.sig) : -1;
+      }
+
+      /* 库里那一项 → `mcCfg.custom` 的形状。★ 就是原来那四个字段，一个不多一个不少：
+         多带的字段会被 TaskMascot.readCustom **静默丢掉**（它只挑 dirs/reacts/thumb/sig），
+         所以"顺手带上 src"这种做法除了撑大 storage 没有任何作用。 */
+      function mcPayload(it){
+        return { dirs: it.dirs, reacts: it.reacts, thumb: it.thumb, sig: it.sig };
+      }
+
+      function mcLibSave(){
+        /* ★ 写失败要说话：库比单个 custom 大得多（每项上百 KB），
+           storage.local 配额是 10 MB。静默失败的话，屏幕上就是
+           "我传了第三张，切来切去只有两张" —— 而用户会以为是界面坏了。 */
+        return Store.set(mcLib, LIBKEY).catch(function(){ toast("存不下了：先删掉一两张再传"); });
+      }
+
+      /* 自动起名：「你自己的图 1 / 2 / 3」。
+         ★ 找的是**最小可用号**，不是 `mcLib.length + 1` —— 后者在删过一项之后
+           会跟还活着的那一项同名（两格悬停出来一模一样，看不出是两张）。 */
+      function mcNextName(){
+        for (var n = 1; n <= MC_LIB_MAX + 1; n++) {
+          var s = CUSTOM_NAME + " " + n, hit = false;
+          for (var i = 0; i < mcLib.length; i++) if (mcLib[i].name === s) { hit = true; break; }
+          if (!hit) return s;
+        }
+        return CUSTOM_NAME;      /* 理论上到不了（条数有上限），兜一个不炸的 */
+      }
+
+      /* sig 平时就是时间戳。★ 为什么要防撞：同一毫秒里建两项时 sig 会相同，
+         而库里**靠 sig 认项**（mcLibClean 还会按 sig 去重）——
+         撞了就是"第二项被清洗掉了"，屏幕上"我传了三张只剩两张"，一句报错都没有。 */
+      function mcNewSig(){
+        var s = String(Date.now());
+        while (mcLibFind(s) >= 0) s = String(Number(s) + 1);
+        return s;
+      }
+
+      /* 九格里哪几格有图 → "0110..."。★ 回填时要靠它把**空格还原成空格**：
+         源图里空格是透明的，而"透明"和"这格本来就该空着"在像素上分不出来。 */
+      function mcHad(){
+        var s = "";
+        for (var i = 0; i < 9; i++) s += mcSlots[i] ? "1" : "0";
+        return s;
+      }
+
+      /* 九格（已归一化到 CUSTOM.SRC）→ 一张 480² 的源图，存进库供「编辑」回填。
+         ★ 存的是**归一化之后**那九张，不是用户原始文件：原图可能 4000×4000，
+             存下来一张就几 MB；而 buildDirs 需要的正是 160² 这一档。
+         ★ 用 webp 0.85：这是一份"能再烘一次"的中间件，不是成品；质量够用即可。 */
+      function mcSrcSheet(cells){
+        var S = TaskMascot.CUSTOM.SRC;
+        var c = document.createElement("canvas");
+        c.width = S * 3;
+        c.height = S * 3;
+        var g = c.getContext("2d");
+        for (var i = 0; i < 9; i++) {
+          if (!cells[i]) continue;
+          var col = i % 3, row = (i - col) / 3;
+          g.drawImage(cells[i], col * S, row * S);
+        }
+        return c.toDataURL("image/webp", 0.85);
+      }
+
+      /* dataURL → 已解码的 Image（mcLoad 收的是 File，走的是 objectURL）。 */
+      function mcLoadUrl(url, cb, bad){
+        var im = new Image();
+        im.onload = function(){ cb(im); };
+        im.onerror = function(){ bad("这张源图读不出来"); };
+        im.src = url;
+      }
+
+      /* 「编辑」= 把库项的**源图**回填进九格。
+         ★★★ 为什么回填源图、不回填成品（`dirs`）—— 先摆实测，再讲理由。
+           探针 `_p_490_dblbake.py`（Edge 真机，同九张不对称角色图，同一份
+           `buildDirs`），把产物当输入再烘，量两件事：
+
+             与原件的平均像素差(/255)   雪碧格里人物占比倍率
+             从源图回填   0.488               1.000
+             从成品回填   0.558               1.009
+             成品再滚一轮 0.791               1.009
+
+           ★★ 所以**不能**把理由写成"叠两次会越改越小 / 越改越歪" ——
+             那句话是**推理**（我读到 `paintDirs` 会给格子内缩就推出来了），
+             实测**不支持**：占比倍率一直 ≈ 1，根本不缩。
+             原因也不难看清：`paintDirs` 写进第 i 格的是 `paintCell` 出来的
+             **对齐后原图**，**一处旋转都没有** —— 朝向是靠**格号**表达的，
+             不在像素里，所以朝向压根不会被烘第二遍。
+             （"旋转会被叠两次"这个印象来自 v0.24.1 那条老路：那时候是
+              一张图 + 九组几何变换烘出九个朝向，产物里**真的**有旋转。）
+           ★ 那还存源图干什么 —— 两条理由，都不是"修 bug"：
+             ① 保真：上面 0.488 / 0.558 是**每一次编辑**都要付的代价。
+             ② 解耦（更硬的那条）：`dirs` 是**产物**，它的版式 —— `BASE` 内缩、
+                空格用底脸填满、图集次序 —— 全归 `mascotfit.js` 的渲染器所有。
+                拿产物当输入，等于把「编辑」这条路的正确性**拴在当期版式上**：
+                哪天 `BASE` 从 0.8 改成 0.7，老项的往返就静默错位，一句报错都没有。
+             代价实测约 24 KB/项（`srcLen`，一张 480² webp）。
+         ★ src 为 null（v0.28.x 存下来的那种）时明说做不到，而不是给一个点了没反应的按钮。 */
+      function mcRefill(it, done, bad){
+        if (!it || !it.src) {
+          return bad("这一张是上一版存的，没留源图；点「上传图片」传一张就能逐格改");
+        }
+        var had = (typeof it.had === "string" && it.had.length === 9) ? it.had : "111111111";
+        mcLoadUrl(it.src, function(im){
+          var nine = TaskMascotFit.splitSheet(im);
+          if (!nine) return bad("这张源图读不出来");
+          for (var i = 0; i < 9; i++) mcSetSlot(i, had.charAt(i) === "1" ? nine[i] : null);
+          done();
+        }, bad);
+      }
+
+      /* 换到库里某一项。**纯拷贝**（见 mcPayload 上面那段）。 */
+      function mcSelect(it, msg){
+        saveMc({ char: "custom", custom: mcPayload(it) }, msg);
+      }
+
+      /* 一次性的老数据迁移，见下面调用处的注释。 */
+      function mcMigrate(){
+        var c = mcCfg.custom;
+        if (!c || !c.dirs || !c.reacts) return;
+        if (c.sig && mcLibFind(c.sig) >= 0) return;          /* 已经在库里了 */
+        /* ★★ sig 原来有就**留着**，只补空的那种。
+           上一版（写这儿的时候）是无条件新生成一个，结果是：升级后第一次打开
+           设置页，同一张图换了个 sig → 桌面球的快照指纹跟着变 → **白推一次快照**
+           （一百多 KB 的 dataURL 过一遍 native messaging），而这张图一个像素都没变。
+           ★ sig 的语义就是"这是哪一张图"，同一张图不该在迁移时换身份。
+           ★ 前面那句 `mcLibFind(c.sig) >= 0` 已经保证了 c.sig 不会被别项占用，
+             所以直接沿用是安全的。 */
+        var sig = c.sig || mcNewSig();
+        mcLib.unshift({
+          sig: sig, name: mcNextName(), src: null, had: "111111111",
+          dirs: c.dirs, reacts: c.reacts, thumb: c.thumb || ""
+        });
+        c.sig = sig;                    /* mcCfg 是同一个对象，改它就是改当前配置 */
+        /* ★ 写库一律走 mcLibSave（**只有这一条写路径**）：
+           两处各写各的 = 迟早有一处漏掉新加的字段，而"哪一处写的"看不出来。 */
+        mcLibSave();
+        Store.set(mcCfg, MCKEY);
+      }
+
+      /* 改名：点名字 → 原地换成一个输入框。回车提交、Esc 取消、点别处（blur）提交。
+         ★ 为什么不用 prompt()：它在 headless / file:// 下会被拦，而且没法做真机门。
+         ★ 为什么不在网格里改：名字是"当前这一项是谁"的显示，改名的入口就该在它身上，
+           而不是在一堆格子里（点格子是"换角色"，不是"改名字"）。 */
+      function mcRename(at){
+        if (document.getElementById("mcNameIn")) return;     /* 已经在改名了 */
+        var it = mcLib[at];
+        if (!it || !mcName) return;
+        var inp = document.createElement("input");
+        inp.type = "text";
+        inp.id = "mcNameIn";
+        inp.className = "mcin";
+        inp.maxLength = 12;
+        inp.value = it.name;
+        mcName.hidden = true;
+        mcName.parentNode.insertBefore(inp, mcName.nextSibling);
+        inp.focus();
+        inp.select();
+        var done = false;
+        function fin(commit){
+          if (done) return;
+          done = true;
+          var v = commit ? String(inp.value || "").replace(/^\s+|\s+$/g, "").slice(0, 12) : "";
+          if (inp.parentNode) inp.parentNode.removeChild(inp);
+          mcName.hidden = false;
+          /* 空名字不提交：名字是这一项在网格里的标识，清空等于把两格变成一样的 */
+          if (v && v !== it.name) {
+            it.name = v;
+            mcLibSave();
+            renderMcGrid();
+          }
+          paintMc();
+        }
+        inp.addEventListener("keydown", function(e){
+          if (e.key === "Enter") fin(true);
+          else if (e.key === "Escape") fin(false);
+        });
+        inp.addEventListener("blur", function(){ fin(true); });
+      }
+
+      /* ★★★ 迁移必须在**第一次 paintMc 之前**跑：paintMc 要靠 mcCurIdx() 找当前项
+         来决定名字显示什么、「编辑/删掉」露不露面。晚一步的话，升级后第一次打开
+         设置页会看到"名字是一串 id / 少两个按钮"，刷新一下才好。 */
+      mcMigrate();
 
       function paintMc(){
         mcBox.checked = mcCfg.on;
@@ -1890,23 +2158,49 @@ function aiBind(){
            「有没有 thumb」就是判据 —— 跟网格里那格用的是同一个判断，
            两处口径分叉就是「设置页是自己的图、球上还是狐狸」那类怪事的温床。 */
         var isCustom = mcCfg.char === "custom" && !!mcCfg.custom;
+        /* ★ v0.29.0：当前这一项在**库**里的下标（-1 = 不在库里）。
+           名字、「编辑」「删掉」三样都只认它。 */
+        var cur = mcCurIdx();
         if (mcFace) {
           mcFace.style.backgroundImage = "url(" +
             (isCustom ? mcCfg.custom.thumb
                       : (MCBASE + "/thumb/" + mcCfg.char + ".webp")) + ")";
         }
-        if (mcName) mcName.textContent = isCustom
-          ? CUSTOM_NAME : (mcNames[mcCfg.char] || mcCfg.char);
-        /* 没传过图就没有「删掉」—— 一个删不掉东西的按钮比没有按钮更糟 */
-        if (mcDel) mcDel.hidden = !mcCfg.custom;
+        if (mcName) {
+          mcName.textContent = isCustom
+            ? ((cur >= 0 ? mcLib[cur].name : "") || CUSTOM_NAME)
+            : (mcNames[mcCfg.char] || mcCfg.char);
+          /* ★ 只有自定义项能改名：内置那 58 个的名字来自清单（mascots/index.js），
+             改了就是两处口径分叉。`.ed` 只把"这里能点"画出来（虚下划线 + 手型），
+             **不放说明文字** —— 名字能不能点必须有个看得见的线索，否则这个功能
+             等于不存在。 */
+          var canName = isCustom && cur >= 0;
+          mcName.classList.toggle("ed", canName);
+          mcName.title = canName ? "点一下改名" : "";
+        }
+        /* 没传过图就没有「删掉」—— 一个删不掉东西的按钮比没有按钮更糟。
+           ★ v0.29.0：判据从 `!!mcCfg.custom` 收到 `cur >= 0`，因为「删掉」现在删的是
+             **库里这一项**：库里没有这一项时它什么也删不掉（点一下＝静默无反应，
+             那比按钮不存在更糟）。
+           ★「编辑」跟它一起露面：两者都以"当前这一项在库里"为前提。
+             源图缺失（旧版存的那张）不在此列 —— 那时「编辑」点了会明说做不到，
+             而不是消失（消失＝用户以为功能被砍了）。 */
+        if (mcDel) mcDel.hidden = !(isCustom && cur >= 0);
+        if (mcEdit) mcEdit.hidden = !(isCustom && cur >= 0);
         if (mcSizeEl) {
           [].forEach.call(mcSizeEl.querySelectorAll("button"), function(b){
             b.classList.toggle("on", Number(b.getAttribute("data-sz")) === mcCfg.size);
           });
         }
         if (mcGrid) {
+          /* ★★★ v0.29.0：自定义那几格的 `data-id` 是 **`custom:<sig>`**（每项一条），
+             不能再拿 `mcCfg.char`（永远是 "custom"）去比 —— 那样**每一项都亮**
+             （屏幕上就是"我选了第 2 张，结果三格全高亮"，看着像全选了）。
+             内置角色的 id 里不可能出现冒号，所以这个前缀不会有歧义。 */
+          var curId = (isCustom && mcCfg.custom.sig)
+            ? ("custom:" + mcCfg.custom.sig) : mcCfg.char;
           [].forEach.call(mcGrid.querySelectorAll("button"), function(b){
-            b.classList.toggle("on", b.getAttribute("data-id") === mcCfg.char);
+            b.classList.toggle("on", b.getAttribute("data-id") === curId);
           });
         }
       }
@@ -1953,9 +2247,19 @@ function aiBind(){
       if (mcGrid) {
         mcGrid.addEventListener("click", function(e){
           var b = e.target.closest ? e.target.closest("button") : null;
-          if (!b || !b.getAttribute("data-id")) return;
-          saveMc({ char: b.getAttribute("data-id") },
-                 "换成了「" + (mcNames[b.getAttribute("data-id")] || b.getAttribute("data-id")) + "」");
+          if (!b) return;
+          var id = b.getAttribute("data-id");
+          if (!id) return;
+          /* ★ v0.29.0：自定义那几格是多条（每项一格），id 形如 `custom:<sig>`。
+             走 mcSelect() 把那一项的**成品整个搬进 mcCfg.custom** —— 跟内置角色
+             是同一个手势（点格子），不是第二套交互。 */
+          if (id.indexOf("custom:") === 0) {
+            var it = mcLib[mcLibFind(id.slice(7))];
+            if (!it) return;                 /* 库刚被清掉：宁可什么都不做，别写半个 */
+            mcSelect(it, "换成了「" + it.name + "」");
+            return;
+          }
+          saveMc({ char: id }, "换成了「" + (mcNames[id] || id) + "」");
         });
       }
 
@@ -2000,10 +2304,20 @@ function aiBind(){
              它是**幂等**的，重复调用不会把自定义组插两次。 */
         function mcSyncCustomGroup(){
           var at = order.indexOf(CUSTOM_GROUP);
-          if (mcCfg.custom) {
-            byGroup[CUSTOM_GROUP] = [{
-              id: "custom", name: CUSTOM_NAME, thumb: mcCfg.custom.thumb
-            }];
+          /* ★★★ v0.29.0：这一组从「一格」变成「每项一格」。
+             ★ 判据是 `mcLib.length` 而**不是** `mcCfg.custom` —— 老大要的是
+               "传过的都留着"，所以哪怕当前选的是狐狸，自己传的那几张也该
+               **照样摆在网格里**。用 mcCfg.custom 当判据的话，切回内置角色
+               那几格就集体消失，用户只会以为"我切了一下，我的图没了"。
+             ★ 一句话：**格子在不在，由库说了算；哪一格高亮，才由 mcCfg 说了算。**
+               这两件事原来共用一个判据，拆开是这一版的关键一步。 */
+          if (mcLib.length) {
+            byGroup[CUSTOM_GROUP] = mcLib.map(function(it){
+              /* thumb 兜一个 1×1 透明图：下面的渲染写的是
+                 `c.thumb ? c.thumb : MCBASE + "/thumb/" + c.id + ".webp"`，
+                 而 `custom:<sig>` 拼出来必然 404（格子角上一个碎图标）。 */
+              return { id: "custom:" + it.sig, name: it.name, thumb: it.thumb || MC_BLANK };
+            });
             if (at < 0) order.unshift(CUSTOM_GROUP);
           } else if (at >= 0) {
             order.splice(at, 1);
@@ -2199,29 +2513,60 @@ function aiBind(){
         tc.width = T;
         tc.height = T;
         tc.getContext("2d").drawImage(face, off, off, inner, inner, 0, 0, T, T);
+        /* ★ v0.29.0：把 `cells` 也带出去 —— 那是**九张已经归一化好的源图**
+           （每张 CUSTOM.SRC 见方）。「编辑」要的源图就是从它拼出来的，
+           再走一遍 metaOfImage/alignPlans 纯属白算，而且结果一定一样。 */
         return { dirs: dirs, reacts: reacts, thumb: tc.toDataURL("image/webp", 0.85),
-                 maxUp: fit.maxUp };
+                 maxUp: fit.maxUp, cells: fit.cells };
       }
 
       /* 烘 + 整块写 storage。★ 任何一步失败都只 toast 一句话，
-         **绝不写半份配置**（写进去就是一张空白球）。 */
-      function mcCommit(okMsg){
+         **绝不写半份配置**（写进去就是一张空白球）。
+         ★★★ v0.29.0：多了 `asNew`，而且返回值从 true/false 变成**状态串**。
+           · asNew = true  → **再加一张新的**（从「上传图片」进来的）
+           · asNew = false → **改当前这一张**（点某一格补图 / 左右对调 / 整张九宫格）
+         ★ 为什么这个开关必须由调用方给、不能自己猜：两条路烘出来的东西**一模一样**，
+           只有"写回哪儿"不同。猜错就是老大报的那个 bug 的第二副面孔 ——
+           "点上传，结果又把上一张覆盖了"。而调用方**确实知道**这一轮是从哪个按钮进来的。
+         ★ 为什么返回值要分状态：三种失败要说三句不同的话 ——
+           烘不出来（图有问题）／库满了（要删一张）／成功。
+           只回 true/false 的话，调用方接到 false 就去说"这些图处理不了"，
+           而真实原因是**库满了** —— 用户按这句话换十张图也没用。
+           用 `""` 表示成功，`if (!rc)` 这种老写法照样成立。 */
+      function mcCommit(okMsg, asNew){
         var bun;
         try { bun = mcBake(); } catch (e) { bun = null; }
-        if (!bun) return false;
+        if (!bun) return "bake";
         /* ★ 放大超上限时**换掉**那句成功文案，而不是再补一条：两次 toast 会互相
            顶掉，用户只看到最后一条 —— 而他最需要知道的正是「会有点糊」。 */
         if (bun.maxUp > TaskMascotFit.MAX_UP) {
           okMsg = "有张图被放大了 " + bun.maxUp.toFixed(1) + " 倍，会有点糊";
         }
-        saveMc({ char: "custom", custom: {
-          dirs: bun.dirs, reacts: bun.reacts, thumb: bun.thumb,
-          /* sig：换图必须刷新它。桌面球的快照指纹只认 char，而 char 一直是
-             "custom" —— 不换 sig 的话「换了一张自己的图」在球上完全无感。 */
-          sig: String(Date.now())
-        } }, okMsg);
+        var at = asNew ? -1 : mcCurIdx();
+        /* 条数上限。★ 拒绝，而不是"悄悄挤掉最老的一项"：后者用户看到的是
+           "加成功了"，而丢的是他更早那张图 —— 静默的数据丢失没有任何补救入口。 */
+        if (at < 0 && mcLib.length >= MC_LIB_MAX) {
+          toast("最多存 " + MC_LIB_MAX + " 张，先删掉一张再传");
+          return "full";
+        }
+        var it = {
+          /* sig：**换一张新图必须刷新它**。桌面球的快照指纹只认 char，而 char 一直是
+             "custom" —— 不刷新的话「换了一张自己的图」在球上完全无感。
+             ★ 但**改当前这一项时沿用原来的 sig**：sig 是这一项的身份证，换掉
+               等于它从库里消失又冒出一项，当前项当场对不上号（高亮没了）。 */
+          sig: at >= 0 ? mcLib[at].sig : mcNewSig(),
+          name: at >= 0 ? mcLib[at].name : mcNextName(),
+          /* 源图是「编辑」的前提，所以**每次烘都重存一份**（不只是新增那一次）：
+             左右对调之后源图也跟着对调了，存旧的会导致"改完编辑回来又变回原样"。 */
+          src: mcSrcSheet(bun.cells),
+          had: mcHad(),
+          dirs: bun.dirs, reacts: bun.reacts, thumb: bun.thumb
+        };
+        if (at >= 0) mcLib[at] = it; else mcLib.push(it);
+        mcLibSave();
+        saveMc({ char: "custom", custom: mcPayload(it) }, okMsg);
         renderMcGrid();
-        return true;
+        return "";
       }
 
       if (mcCells) {
@@ -2267,7 +2612,13 @@ function aiBind(){
             mcFillFrom(from, imgs, auto);   /* 自动 = 换一整套（清空）；指定格 = 只补那几格 */
             renderMcCells();
             if (mcMake) mcMake.hidden = false;
-            if (!mcCommit("换成了你自己的图")) toast("这些图处理不了，换几张试试");
+            /* ★★★ v0.29.0：`asNew = auto`。「从上传按钮进来」（mcFrom 是 -1）
+               = 再加一张新的；「点某一格补图」= 改当前这一张。
+               ★ 这两个意图共用**同一条 change 通路** —— 上一版就是因为它们共用
+                 而又没把意图传下去，才会出现"第二次上传把第一张覆盖掉"。 */
+            if (mcCommit("换成了你自己的图", auto) === "bake") {
+              toast("这些图处理不了，换几张试试");
+            }
           }, function(msg){ toast(msg); });
         });
       }
@@ -2291,8 +2642,42 @@ function aiBind(){
             mcFillFrom(0, nine, true);   /* 一整张 = 换一整套，清空 */
             renderMcCells();
             if (mcMake) mcMake.hidden = false;
-            if (!mcCommit("换成了你自己的图")) toast("这张图处理不了，换一张试试");
+            /* ★ asNew = false：这一格在九格面板里面，而九格面板是"我正在拼**这一张**"。
+               它是给当前项重新供一套源图，不是"再加一张"。 */
+            if (mcCommit("换成了你自己的图", false) === "bake") {
+              toast("这张图处理不了，换一张试试");
+            }
           }, function(msg){ toast(msg); });
+        });
+      }
+
+      /* ★★★ v0.29.0：点名字改名。判据在 mcRename 里（不在库里就什么都不做）——
+         这里只把点击接上，别在监听器里再抄一遍"是不是自定义"的判断。 */
+      if (mcName) {
+        mcName.addEventListener("click", function(){
+          var at = mcCurIdx();
+          if (at >= 0) mcRename(at);
+        });
+      }
+
+      /* ★★★ v0.29.0：「编辑」= 把当前这一项的**源图**回填进九格。
+         ★ 它是老大要的 (b)：**已经传完之后还要能改**。旧版没有这个入口，
+           所以"想改"只能再传一遍 —— 而再传一遍又只能覆盖（库里只有一格）。
+         ★ 回填的是源图不是成品，原因见 mcRefill 上面那段。
+         ★ 跟「上传图片」**必须是两个按钮**：上传 = 再加一张新的，编辑 = 改这一张。
+           合成一个的后果就是这一版要修的那个问题（第二次上传覆盖第一次）。 */
+      if (mcEdit) {
+        mcEdit.addEventListener("click", function(){
+          var it = mcLib[mcCurIdx()];
+          if (!it) return;
+          mcRefill(it, function(){
+            renderMcCells();
+            if (mcMake) mcMake.hidden = false;
+            /* ★ mcFrom 归位成 -1：回填之后九格是"这一项的全套"，
+               用户接着点某一格时那个处理器会重新赋值，这里不归位也不会错；
+               但归位之后「回填完直接点上传」不会被上一次的格号影响。 */
+            mcFrom = -1;
+          }, toast);
         });
       }
 
@@ -2304,25 +2689,41 @@ function aiBind(){
           var a = TaskMascotFit.swapColumns(mcSlots);
           for (var i = 0; i < 9; i++) mcSetSlot(i, a[i]);
           renderMcCells();
-          mcCommit("左右对调了");
+          /* ★ asNew = false：对调的是**当前这一张**，不是新加一张。 */
+          mcCommit("左右对调了", false);
         });
       }
 
       if (mcDel) {
         mcDel.addEventListener("click", function(){
-          /* ★ 删掉要**连数据一起删**（不是只把 char 换回去）：留着两份用不上的
-             dataURL 在 storage 里，用户再也没有入口能删掉它。
+          /* ★★★ v0.29.0：「删掉」从"删掉唯一那张自定义图"变成"**删掉库里当前这一项**"。
+             ★ 库里还有别的项时，删完要**自动落到剩下的一项**上，而不是退回狐狸 ——
+               退回狐狸的话，用户看到的是"我删了第 2 张，结果球变了样"，
+               而库里另外两张还在（他得自己再点回去）。
+             ★ 落到"原来那个位置的下一项"，位置用 `min(at, len-1)` 夹住：
+               删的是最后一项时那个下标已经越界了，不夹就会拿到 undefined 然后炸在下游。
+             ★ 库空了才退回默认角色，并且**连数据一起删**（不是只把 char 换回去）：
+               留着两份用不上的 dataURL 在 storage 里，用户再也没有入口能删掉它。
              ★ 回到 TaskMascot.DEFAULT.char 而不是写死 "fox" —— 默认角色将来换了，
                这里跟着换；写死就是第二个口径。 */
-          delete mcCfg.custom;
-          saveMc({ char: TaskMascot.DEFAULT.char }, "已删掉你自己的图");
+          var at = mcCurIdx();
+          if (at >= 0) mcLib.splice(at, 1);
+          mcLibSave();
           /* ★ v0.28.0：九格面板也要跟着清空、收起来 —— 不清的话，删完之后
              面板里还摆着那九张缩略图，看着像「删了还在」；而下次再点某一格
              换图，会拿一堆已经删掉的图去重烘。 */
           for (var i = 0; i < 9; i++) mcSetSlot(i, null);
           renderMcCells();
           if (mcMake) mcMake.hidden = true;
-          renderMcGrid();
+          if (mcLib.length) {
+            renderMcGrid();
+            var nx = mcLib[Math.min(at < 0 ? 0 : at, mcLib.length - 1)];
+            mcSelect(nx, "已删掉，换成了「" + nx.name + "」");
+          } else {
+            delete mcCfg.custom;
+            saveMc({ char: TaskMascot.DEFAULT.char }, "已删掉你自己的图");
+            renderMcGrid();
+          }
         });
       }
     }
