@@ -1843,7 +1843,17 @@ function aiBind(){
            而这边的表现是"九格面板是空的、控制台一句 ReferenceError"。） */
       var mcSlots = [null, null, null, null, null, null, null, null, null];
       var mcThumbs = [null, null, null, null, null, null, null, null, null];
-      var mcFrom = 0;      /* 这次文件选择从第几格开始填 */
+      /* ★★★ v0.28.1：`mcFrom` 多了个取值 **-1 = 自动**（原来只有一个 0 起算的格号）。
+         -1 = 用户点的是「上传图片」按钮，**没指定是哪一格**；
+         >=0 = 用户点的是第 i 格，就从他点的那一格开始铺。
+         ★ 为什么必须分开：点「上传图片」和点第 0 格，旧代码里**都是 0** ——
+           而这两件事该做的正相反：
+             点按钮只选 1 张 → 那是用户心里那张"我的角色"，**是正脸**，该落第 4 格；
+             点第 0 格选 1 张 → 用户明说了"这是朝左上那张"，该落第 0 格。
+           分不开的后果：传一张正脸被当成"朝左上"，而正脸格（第 4 格）会被
+           补图用 DIRS[4]（identity）填成同一张 —— 球上"左上"和"正脸"长得
+           一模一样，**转头到左上时不转**。 */
+      var mcFrom = -1;
       /* 方向箭头的角度（左上/上/右上 · 左/正脸/右 · 左下/下/右下）。
          第 4 格给 null —— 正脸换成圆点（正对观众，没有"朝哪"这回事）。 */
       var MC_ROT = [-45, 0, 45, -90, null, 90, -135, 180, 135];
@@ -2130,14 +2140,27 @@ function aiBind(){
         });
       }
 
-      /* 把一批图从 from 格开始铺。★ from === 0 时先清空九格：不清的话
-         「原来有 9 格、这次只选 2 张」会让后 7 格留着上一次的图 ——
-         而用户以为他刚换了一整张新的。 */
-      function mcFillFrom(from, imgs){
+      /* 把一批图从 from 格开始铺。
+         ★ clear = true 时先清空九格：不清的话「原来有 9 格、这次只选 2 张」
+           会让后 7 格留着上一次的图 —— 而用户以为他刚换了一整张新的。
+         ★★ v0.28.1：清空**不再由 `from === 0` 自己决定**，改由调用方给。
+           旧写法（from 是 0 就清）在新语义下是错的：单张走自动落位时
+           from 也是 4、多张也是 0，而"点某一格补一格"同样会算出 from 0 ——
+           三种意图没法用格号反推。两个调用方的真实意图是：
+             点「上传图片」= 我换一整套 → clear = true
+             点第 i 格     = 我只补这几格 → clear = false（留着别的格） */
+      function mcFillFrom(from, imgs, clear){
         var i;
-        if (from === 0) for (i = 0; i < 9; i++) mcSetSlot(i, null);
+        if (clear) for (i = 0; i < 9; i++) mcSetSlot(i, null);
         for (i = 0; i < imgs.length && from + i < 9; i++) mcSetSlot(from + i, imgs[i]);
       }
+
+      /* ★★★ v0.28.1：点「上传图片」（没指定格）时的落位。
+         只给 1 张 = 用户手上就一张脸，那**一定是正脸**（老路也是这么理解的：
+         一张图 + 九组几何变换），落第 4 格；给多张 = 按文件名顺序从第 0 格铺起。
+         ★ 1 张落第 4 格不是为了好看：落第 0 格的话，那张图成了"朝左上"的基准，
+           第 4 格再被补图按 DIRS[4]（identity）填一遍 —— 两格像素级相同。 */
+      function mcAutoFrom(n){ return n === 1 ? 4 : 0; }
 
       /* 九格 → 两张 3×3 雪碧 + 一张缩略图。
          ★ 对准与拼装全走 TaskMascotFit.buildDirs（一处实现，那边有单测）。
@@ -2206,23 +2229,42 @@ function aiBind(){
           var b = e.target && e.target.closest ? e.target.closest("button") : null;
           if (!b || !mcFile) return;
           var i = Number(b.getAttribute("data-i"));
-          mcFrom = (i >= 0 && i < 9) ? i : 0;
+          /* 点某一格 = 用户指定了朝向，落错格是**看得见**的错（第 5 格摆着侧脸）。
+             取不到合法格号时退回 -1（自动），不要退回 0 —— 0 是"朝左上"，
+             那是个**具体的朝向声明**，用它兜底等于把"不知道"说成"就是左上"。 */
+          mcFrom = (i >= 0 && i < 9) ? i : -1;
           mcFile.click();
         });
       }
 
       if (mcUp && mcFile) {
         mcUp.addEventListener("click", function(){
-          mcFrom = 0;
+          mcFrom = -1;              /* 自动：由张数决定落位（1 张 = 正脸） */
           mcFile.click();
         });
         mcFile.addEventListener("change", function(){
-          var files = mcFile.files;
-          /* ★ 立刻清空：不清的话「再传同一批图」不会触发 change（值没变），
-             用户会以为按钮坏了。 */
+          /* ★★★ v0.28.1 修的就是这两行的**顺序**：必须先浅拷贝成真数组，再清空 value。
+             顺序反了 = 「选了图却报没选到文件」，用户点上传、选完照片，
+             弹回来的是一句「没选到文件」。
+             ★ `input.files` 是**活的视图**，不是快照（IDL 上是 `[SameObject]`）。
+               真机实测（Edge headless，2026-09-19）：
+                   赋值后                input.files.length = 2
+                   清空 value 后，之前拿到的那个引用 .length = 0   ← 图在这里被丢掉
+                   清空 value 后，浅拷贝出来的数组 .length = 2     ← 拷贝就没事
+             ★ 而 value 又**必须**清空（不清的话「再传同一批图」不触发 change，
+               用户会以为按钮坏了）—— 两件单独看都对的事撞在一起，就是这个 bug。
+             ★ 上一版（v0.26.0）写的是 `files[0]`：先把 File 对象取出来，所以一直是好的。
+               本版为了「一次多选九张」顺手改成拿整个列表，才踩进来 —— 是**回归**。
+             ★ 同一个文件里 `mcSheetFile`（整张九宫格）那条至今仍是 `files[0]` 的形状，
+               所以「整张九宫格」好用、「上传图片」坏了。**这个不对称是它藏了一整版的原因**：
+               两个入口长得像兄弟，谁也不会想到其中一个坏了；而"旁边那个是好的"
+               反而让人先怀疑自己选错了文件。 */
+          var files = [].slice.call(mcFile.files || []);
           mcFile.value = "";
-          mcLoadAll(files, mcFrom, function(imgs){
-            mcFillFrom(mcFrom, imgs);
+          var auto = mcFrom < 0;
+          var from = auto ? mcAutoFrom(files.length) : mcFrom;
+          mcLoadAll(files, from, function(imgs){
+            mcFillFrom(from, imgs, auto);   /* 自动 = 换一整套（清空）；指定格 = 只补那几格 */
             renderMcCells();
             if (mcMake) mcMake.hidden = false;
             if (!mcCommit("换成了你自己的图")) toast("这些图处理不了，换几张试试");
@@ -2233,6 +2275,11 @@ function aiBind(){
       if (mcSheetBtn && mcSheetFile) {
         mcSheetBtn.addEventListener("click", function(){ mcSheetFile.click(); });
         mcSheetFile.addEventListener("change", function(){
+          /* ★★ 这里写的是 `files[0]` —— **先把 File 对象取出来**，所以下面那句
+             `value = ""` 清不掉它。v0.28.1 之前「上传图片」坏了、这一条一直是好的，
+             差别就在这一个字符（`files` vs `files[0]`）。
+             → 改动这条时**不要**顺手把它"统一"成 `var f = mcSheetFile.files`
+               那种更好看的写法：好看的那版是坏的（见上面 mcFile 那段实测数据）。 */
           var f = mcSheetFile.files && mcSheetFile.files[0];
           mcSheetFile.value = "";
           mcLoad(f, function(im){
@@ -2241,7 +2288,7 @@ function aiBind(){
                所以两条入口共用同一条路。 */
             var nine = TaskMascotFit.splitSheet(im);
             if (!nine) return toast("这张图太小了，切不出九格");
-            mcFillFrom(0, nine);
+            mcFillFrom(0, nine, true);   /* 一整张 = 换一整套，清空 */
             renderMcCells();
             if (mcMake) mcMake.hidden = false;
             if (!mcCommit("换成了你自己的图")) toast("这张图处理不了，换一张试试");
