@@ -19,3 +19,22 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+------------------------------------------------------------------------------
+
+Third-party components
+
+This package bundles the third-party works listed below. Each is licensed under
+the MIT License; the permission notice reproduced above is the license text for
+each of them, with the copyright holder named per item.
+
+  mascots/      174 webp files -- 58 characters x (directions + reactions),
+                plus thumbnails: the mascot artwork, and the sprite-sheet
+                layout used with it.
+                    Copyright (c) 2026 Kamran Ahmed <https://kamran.fyi>
+                    https://github.com/nilbuild/page-mascot
+
+  qrcode.js     qrcode-generator 2.0.4, included verbatim; its original
+                copyright header is kept inside the file.
+                    Copyright (c) 2009 Kazuhiko Arase
+                    https://github.com/kazuhikoarase/qrcode-generator
