@@ -8,7 +8,7 @@
  * 一、为什么要有这个文件（而不是散在三个调用点里）
  *
  * 「逾期」和「未完成」这两个数，界面上已经有三处各算了一遍：
- *   ballpage.js 的 openCount() / 桌面球 ball.js 的 openCount() / popup.js 的 diffDays()。
+ *   ballpage.js 的 openCount() / popup.js 的 diffDays()。
  * 它们口径碰巧一致（`!archived && (todo||doing)`），但那是**巧合**不是保证 ——
  * 多说一句话就多一个「球上显示 3、气泡说 2」的机会，而这类数不一致用户一定会看见。
  * 所以 facts() 是**唯一**的算法，谁要这两个数都来调它。

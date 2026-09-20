@@ -1044,72 +1044,6 @@
        （v0.27.0 起飞书段改用 `.step` 自己的 border-top 分隔、不再用它 ——
         但那只是"少了一个使用者"，不等于"这个类没用了"）。 */
 
-  /* ---------- 桌面悬浮球（v0.11.0） ----------
-     设置页只是**问**后台，自己不发原生消息 ——
-     native messaging 只能在 Service Worker 里发起，页面里连这个 API 都没有。 */
-  function ballPaint(s){
-    var dot = document.getElementById("ballDot");
-    if (!dot) return;
-    var name = document.getElementById("ballName");
-    var cnt  = document.getElementById("ballCnt");
-    var hint = document.getElementById("ballHint");
-
-    if (!s || s.supported === false) {
-      dot.className = "bdot";
-      name.textContent = "这个浏览器不支持";
-      cnt.textContent = "";
-      hint.textContent = (s && s.error) ||
-        "球要靠浏览器的「原生消息传递」能力，Chrome / Edge / Tabbit 都有。";
-      return;
-    }
-
-    /* ★ 只有两态（连上 / 没连上）。球那边也是两态 ——
-       这里多画一个"正在连接"的第三态，两边口径就会对不上。 */
-    var on = !!s.ok;
-    dot.className = "bdot" + (on ? " on" : "");
-    name.textContent = on ? "已连上" : "没连上";
-
-    var bits = [];
-    if (s.pushes) bits.push("已推 " + s.pushes + " 次");
-    if (s.at) bits.push(fmtTime(s.at));
-    cnt.textContent = bits.join("，");
-
-    /* ★ 失败原因原样显示，绝不翻译成一句「连接失败」——
-       这是唯一的排障抓手，而两种情况完全不同：
-         "Specified native messaging host not found." = 宿主程序没装
-         "桌面悬浮球没有在运行"                        = 球没开
-       折叠成一句笼统的话，等于把线索扔了。 */
-    /* ★ v0.16.1：连上之后不再介绍球能干什么（那是介绍，一行就够；
-       真想知道的人在 README 里看）。这一行只留**排障线索**。 */
-    hint.textContent = on ? "" : (s.error || "还没连过，点「测试连接」试一次。");
-  }
-
-  function ballBind(){
-    var test = document.getElementById("ballTest");
-    if (!test) return;
-
-    // 进页面先问一次（不主动连，免得每次开设置页都拉起一次宿主程序）
-    sendToBg({ type: "ball-status" }).then(ballPaint);
-
-    test.addEventListener("click", function(){
-      test.disabled = true;
-      document.getElementById("ballName").textContent = "连接中…";
-      /* 探活是"真连一次再回话"，要等一小会儿（宿主进程启动 + 球没开时的快速失败），
-         所以按钮必须先禁用 —— 否则会有人连点五下，然后说"点着没反应"。 */
-      sendToBg({ type: "ball-probe" }).then(function(r){
-        test.disabled = false;
-        ballPaint(r);
-      });
-    });
-
-    document.getElementById("ballPush").addEventListener("click", function(){
-      sendToBg({ type: "ball-push" }).then(function(r){
-        ballPaint(r);
-        toast(r && r.ok ? "已经把最新任务推给球" : "没推成功 —— 看下面那行原因");
-      });
-    });
-  }
-
   /* ---------- AI 能力（v0.16.0） ----------
 
    ★ 为什么配置存独立 key（AI.AIKEY = "taskboard.ai"）而不是并进 prefs：
@@ -2734,7 +2668,6 @@ function aiBind(){
     renderProjects();
     renderArch();
     renderStat();
-    ballBind();
     aiBind();
     if (typeof Sync !== "undefined") { fsBind(); fsInit(); }
   });

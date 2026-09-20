@@ -4,10 +4,6 @@
 
 // popup.html / manage.html 是用 <script src> 直接引这几个文件的，
 // 在那种场景下 importScripts 不存在，所以要判一下再用。
-/* ★ mascot.js 也要进 SW（v0.24.0）：推给桌面球的快照里带着吉祥物配置，
-   而那份配置的解析口径只有 mascot.js 里那一个 readConfig —— 不加载它，
-   ball.js 就得自己再写一份默认值（等于把口径复制到第二个仓库去了）。
-   ★ 它在这个作用域里是安全的：不碰 document，root 落在 self 上。 */
 /* ★ notify.js 也必须进 SW（v0.25.0）—— 这是本轮**最容易漏、也最难发现**的一处：
    notifyTick() / sendNudge() / applyNudge() 全都在这个文件里，但它们调的是
    `Notify.facts` / `Notify.gate` / `Notify.localLine` / `Notify.actionOf` /
@@ -16,16 +12,7 @@
    而通知**永远不会出现** —— 一个「功能整块失效但零症状」的形态。
    ★ 顺序无所谓（它是纯函数模块，不依赖前三个），排最后只是保持「先来的在前」。 */
 if (typeof importScripts === "function")
-  importScripts("feishu.js", "sync.js", "mascot.js", "ball.js", "notify.js");
-
-/* ---------- 桌面悬浮球：连一次、推快照 ----------
-   ★ native messaging 只能由 Service Worker（或 popup）发起，**内容脚本里不可用**，
-     所以这条线挂在这里，不在 popup.js 里。
-   ★ SW 被回收又唤醒时整个文件会重新执行一遍 → 这里再 boot 一次是安全的
-     （Ball 内部有 booted 兜底，不会重复建连接）。 */
-function ballBoot() {
-  if (typeof Ball !== "undefined") Ball.boot();
-}
+  importScripts("feishu.js", "sync.js", "notify.js");
 
 var KEY = "taskboard.v1";        // 任务数据
 var PKEY = "taskboard.projects"; // 项目列表
@@ -80,7 +67,6 @@ chrome.runtime.onInstalled.addListener(function (details) {
   updateBadge();
   ensureSyncAlarm();
   ensureNotifyAlarm();
-  ballBoot();          // 装好/升级后立刻连一次球
 });
 
 chrome.contextMenus.onClicked.addListener(function (info, tab) {
@@ -152,11 +138,6 @@ chrome.storage.onChanged.addListener(function (changes, area) {
   lp[LASTUSE] = Date.now();
   chrome.storage.local.set(lp);
 
-  /* 球只做视图 → 数据一变就把新快照推下去（Ball 内部会合并 250ms 内的连续改动）。
-     ★★ 这一行必须排在下面那句 `if (typeof Sync === "undefined") return;` **之前**：
-        那句 return 会把后面整段吃掉 —— 一起消失的就是球的数据，而且一声不响。 */
-  if (typeof Ball !== "undefined") Ball.pushSoon();
-
   // 任务数据被改了 → 安排一次延迟同步。
   // 但同步自己写回本地时也会走到这里，不拦就是死循环：
   // 同步写回 → 触发本事件 → 又要同步 → 又写回…
@@ -183,7 +164,6 @@ function armSoon() {
 
 chrome.runtime.onStartup.addListener(function () {
   updateBadge();
-  ballBoot();          // 浏览器起来时球可能已经在桌面上了，主动连一次
 });
 
 /* ---------- 飞书同步调度 ----------
@@ -338,30 +318,6 @@ if (chrome.runtime.onMessage) {
   chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     if (!msg) return;
 
-    /* 桌面悬浮球：设置页问状态、点「测试连接」。
-       ★ 这两条必须排在下面那句 `typeof Sync === "undefined"` guard **之前** ——
-         设置页问的是球，跟飞书配没配毫无关系；被那句吃掉的表现是
-         「飞书没配 → 球的状态永远显示成没反应」，查起来毫无头绪。 */
-    if (msg.type === "ball-status") {
-      sendResponse(typeof Ball !== "undefined" ? Ball.status()
-                                                : { ok: false, supported: false, error: "球桥没加载" });
-      return;
-    }
-    if (msg.type === "ball-probe") {
-      if (typeof Ball === "undefined") {
-        sendResponse({ ok: false, supported: false, error: "球桥没加载" });
-        return;
-      }
-      Ball.probe().then(sendResponse);
-      return true;   // 异步应答
-    }
-    if (msg.type === "ball-push") {
-      // 设置页改完东西想让球立刻对表时用；正常路径走 storage.onChanged
-      if (typeof Ball !== "undefined") Ball.pushNow();
-      sendResponse(typeof Ball !== "undefined" ? Ball.status() : { ok: false, error: "球桥没加载" });
-      return;
-    }
-
     /* 设置页的「主动提醒」那一块：读状态 / 现在试一次（v0.25.0）。
        ★ 同样必须排在下面那句 `typeof Sync` guard **之前** —— 提醒跟飞书配没配
          毫无关系，被吃掉的表现是「设置页里这一块永远显示成不可用」。 */
@@ -473,13 +429,3 @@ function openAsTab() {
     console.error("[任务台] 标签页也打不开：", e);
   }
 }
-
-/* ---------- 每次 SW 起来都连一次球（★ 必须在顶层） ----------
-   为什么不能只挂在 onInstalled / onStartup 里：
-   MV3 的 service worker 会因为很多原因被唤醒 —— 打开弹窗、收到消息、alarm 到点…
-   而 onStartup 只覆盖「浏览器启动」、onInstalled 只覆盖「装上 / 升级」。
-   于是「浏览器一直开着，球是后来才双击打开的」这个**最常见**的场景两条都不占：
-   那时 SW 早被回收过了，谁都不会去连球，球上就一直挂着「没连上扩展」。
-   顶层代码每次唤醒都会重新执行一遍，所以放这里最省心（Ball 内部有 booted 兜底）。 */
-ballBoot();
-
