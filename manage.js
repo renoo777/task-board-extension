@@ -21,6 +21,8 @@
           一两 MB 的图过一遍那条通道。
      ★ 库只在设置页读写：background.js 的 storage 取值清单里**没有**这个 key。 */
   var LIBKEY = "taskboard.mc.customs";
+  /* ★ 团队派发配置（v0.32.0）。同样从常量取，理由与 NTKEY 一模一样。 */
+  var IKKEY = (typeof Inbox !== "undefined" && Inbox.CFK) ? Inbox.CFK : "taskboard.inbox";
   /* 自定义那一组/那一格的显示名。★ 用**常量**而不是在几处各写一遍字面量：
      「设置页那格叫一个名字、快照里叫另一个」是那种没人会去查的不一致。 */
   var CUSTOM_GROUP = "自定义";
@@ -1686,7 +1688,7 @@ function aiBind(){
 
   /* ---------- 启动 ---------- */
   Promise.all([Store.get(PKEY), Store.get(), Store.get(PREFKEY), Store.get(WBKEY), Store.get(MCKEY),
-               Store.get(NTKEY), Store.get(LIBKEY)]).then(function(r){
+               Store.get(NTKEY), Store.get(LIBKEY), Store.get(IKKEY)]).then(function(r){
     var list = r[0], data = r[1];
     if (Array.isArray(list) && list.length) projects = list;
     if (data && Array.isArray(data.tasks)) {
@@ -1722,6 +1724,28 @@ function aiBind(){
            将来要加字段时必须**连着这里一起改成合并写**，不然就是上面那个坑的复刻。 */
         Store.set({ on: on }, WBKEY).then(function(){
           toast(on ? "网页上会显示悬浮球" : "已关掉：任何网页都不再出现悬浮球");
+        });
+      });
+    }
+
+    /* ---------- 网页球主动弹提示（v0.32.0）----------
+       ★ 它写的是**团队派发那个 key 里的 speakOn**，但开关摆在悬浮球这一页 ——
+         它问的是「球准不准主动开口」，那是球的属性，放在球这一页才找得到
+         （项目里有过一次教训：把「说话」开关藏在吉祥物那格，结果关掉吉祥物
+           之后开关跟着消失，而球照样在说话）。
+       ★★ 走 tmKeep（读-改-写），**不持有 cfg 副本** —— 理由见上面 tmKeep 那条。 */
+    var pushBox = document.getElementById("wbPush");
+    if (pushBox && typeof Inbox !== "undefined") {
+      /* 初值：这里不能直接用 r[7] 那份 —— 团队派发那段可能还没跑、也可能刚改过。
+         读一次最新值最稳，代价只是一次 storage 读。 */
+      Store.get(IKKEY).then(function (o) {
+        pushBox.checked = Inbox.readCfg(o && o[IKKEY]).speakOn === true;
+      });
+      pushBox.addEventListener("change", function () {
+        var on = !!pushBox.checked;
+        if (!tmKeep) { pushBox.checked = !on; return; }
+        tmKeep({ speakOn: on }).then(function () {
+          toast(on ? "有派给你的任务时，球会主动说一句" : "已关掉：球不再主动开口");
         });
       });
     }
@@ -1782,6 +1806,147 @@ function aiBind(){
 
       ntPaint();
     }
+
+    /* ---------- 团队派发（v0.32.0）----------
+       ★★ 这一块是 v0.32.0 的主干：把「派任务给别人」和「收到别人派的任务」
+          两条链路上唯一需要人手填的东西收在这儿 —— 我是谁、组员、团队表。
+       ★ 为什么「我是谁」必须手填：扩展不知道装着它的这个人叫什么，
+          而派发人恰恰是收件方决定「要不要处理」的第一条信息。
+          （做 OAuth 拿真实身份的代价远大于填一次名字，所以不做。）
+       ★ 表链接粘进来就拆出 baseToken / tableId（复用 parseBaseLink），
+          跟飞书同步那条路同一个手势。 */
+    (function wireTeam(){
+      var onBox = document.getElementById("tmOn");
+      if (!onBox || typeof Inbox === "undefined") return;
+      var body = document.getElementById("tmBody");
+      var meEl = document.getElementById("tmMe");
+      var ppEl = document.getElementById("tmPeople");
+      var linkEl = document.getElementById("tmLink");
+      var baseEl = document.getElementById("tmBase");
+      var tblEl = document.getElementById("tmTable");
+      var ntEl = document.getElementById("tmNotify");
+      var statEl = document.getElementById("tmStat");
+      var repEl = document.getElementById("tmReport");
+      var tryHint = document.getElementById("tmTryHint");
+      var nowHint = document.getElementById("tmNowHint");
+      var fixHint = document.getElementById("tmFixHint");
+
+      var cfg = Inbox.readCfg(r[7]);
+
+      function say(el, s){ if (el) el.textContent = s || ""; }
+
+      /* ★★ 唯一写入口：读最新 → 打补丁 → 整块写回。
+         绝不直接用内存里那份 cfg 去覆盖 storage（见上面 tmKeep 那条注释）。 */
+      tmKeep = function (patch) {
+        return Store.get(IKKEY).then(function (o) {
+          var cur = Inbox.readCfg(o && o[IKKEY]);
+          Object.keys(patch || {}).forEach(function (k) { cur[k] = patch[k]; });
+          cfg = cur;
+          return Store.set(cur, IKKEY);
+        }).then(function () { paint(); return cfg; });
+      };
+
+      function paint(){
+        onBox.checked = !!cfg.on;
+        /* ★ 配置区整体跟着开关显隐：关着的时候摆一堆输入框，
+           用户会以为「填了就生效」，而实际上整条链路是断的。 */
+        if (body) body.hidden = !cfg.on;
+        if (meEl) meEl.value = cfg.me;
+        if (ppEl) ppEl.value = cfg.people;
+        if (baseEl) baseEl.value = cfg.baseToken;
+        if (tblEl) tblEl.value = cfg.tableId;
+        if (ntEl) ntEl.checked = cfg.notifyOn === true;
+        if (statEl) {
+          statEl.textContent = cfg.on
+            ? (Inbox.ready(cfg) ? "已配置" : "还差团队表")
+            : "未启用";
+        }
+      }
+
+      onBox.addEventListener("change", function(){
+        tmKeep({ on: !!onBox.checked }).then(function(){
+          toast(onBox.checked ? "已启用团队派发" : "已关掉：不再读写团队表");
+        });
+      });
+
+      /* 文本类输入：change 时落盘（不是 input —— 每敲一个字写一次 storage，
+         敲快了会把上一次还没落的值冲掉，而且没必要）。 */
+      if (meEl) meEl.addEventListener("change", function(){ tmKeep({ me: meEl.value }); });
+      if (ppEl) ppEl.addEventListener("change", function(){ tmKeep({ people: ppEl.value }); });
+      if (baseEl) baseEl.addEventListener("change", function(){ tmKeep({ baseToken: baseEl.value }); });
+      if (tblEl) tblEl.addEventListener("change", function(){ tmKeep({ tableId: tblEl.value }); });
+
+      if (linkEl) linkEl.addEventListener("change", function(){
+        var p = parseBaseLink(linkEl.value);
+        if (!p) { say(repEl, "这个链接里没找到多维表格地址"); return; }
+        if (p.wiki) { say(repEl, "这是知识库的链接，要的是多维表格（/base/）"); return; }
+        if (!p.tableId) { say(repEl, "链接里没有 ?table=tbl…，手动填一下数据表 ID"); }
+        else say(repEl, "");
+        tmKeep({ baseToken: p.baseToken, tableId: p.tableId });
+      });
+
+      if (ntEl) ntEl.addEventListener("change", function(){
+        tmKeep({ notifyOn: !!ntEl.checked }).then(function(){
+          toast(ntEl.checked ? "收到派发任务时会发系统通知" : "已关掉：不再发通知");
+        });
+      });
+
+      /* ★ 凭据不在这儿填 —— 复用飞书同步那份（Inbox.withCred），
+         所以在打开测试之前先看一眼同步配没配，没配就直说。 */
+      function withSync(){
+        if (typeof Sync === "undefined" || typeof Sync.readCfg !== "function") {
+          return Promise.resolve(null);
+        }
+        return Sync.readCfg().then(function (sc) {
+          var full = Inbox.withCred(cfg, sc);
+          if (!full.appId || !full.appSecret) return null;
+          return full;
+        });
+      }
+
+      var testBtn = document.getElementById("tmTest");
+      if (testBtn) testBtn.addEventListener("click", function(){
+        say(repEl, "正在连接…");
+        withSync().then(function (full) {
+          if (!full) { say(repEl, "先在「飞书同步」里配好应用（App ID / Secret）"); return; }
+          if (!full.baseToken || !full.tableId) { say(repEl, "还没填团队表"); return; }
+          return sendToBg({ type: "inbox-test", cfg: full }).then(function (res) {
+            say(repEl, (res && res.ok) ? ("连上了：" + (res.detail || "")) :
+                                        ("连不上：" + ((res && res.reason) || "未知原因")));
+          });
+        });
+      });
+
+      var fixBtn = document.getElementById("tmFix");
+      if (fixBtn) fixBtn.addEventListener("click", function(){
+        say(fixHint, "正在检查…");
+        withSync().then(function (full) {
+          if (!full) { say(fixHint, "先配好飞书应用"); return; }
+          return sendToBg({ type: "inbox-ensure", cfg: full }).then(function (res) {
+            if (!res || !res.ok) { say(fixHint, "补列失败：" + ((res && res.reason) || "未知原因")); return; }
+            say(fixHint, res.added && res.added.length ? ("补上了：" + res.added.join("、")) : "列已经齐了");
+          });
+        });
+      });
+
+      var tryBtn = document.getElementById("tmTry");
+      if (tryBtn) tryBtn.addEventListener("click", function(){
+        sendToBg({ type: "inbox-try" }).then(function (res) {
+          say(tryHint, (res && res.ok) ? ("这条就是它的样子：" + (res.message || "")) : "这条通道现在不可用");
+        });
+      });
+
+      var nowBtn = document.getElementById("tmNow");
+      if (nowBtn) nowBtn.addEventListener("click", function(){
+        say(nowHint, "正在拉取…");
+        sendToBg({ type: "inbox-pull" }).then(function (res) {
+          if (!res || !res.ok) { say(nowHint, "拉不到：" + ((res && res.reason) || "未知原因")); return; }
+          say(nowHint, res.fresh ? ("新收到 " + res.fresh + " 条") : "没有新任务");
+        });
+      });
+
+      paint();
+    })();
 
     /* ---------- 吉祥物（v0.24.0）
        ★★ 这个 key 的每一次写入都必须是**完整对象**（on / char / size / reacts）。

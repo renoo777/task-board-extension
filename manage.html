@@ -949,6 +949,7 @@ body{
     <nav class="nav">
       <a href="#s-project">项目</a>
       <a href="#s-feishu">飞书同步</a>
+      <a href="#s-team">团队派发</a>
       <a href="#s-ball">悬浮球</a>
       <a href="#s-data">数据</a>
       <a href="#s-board">看板</a>
@@ -1102,6 +1103,94 @@ body{
       <div class="report" id="fsReport"></div>
     </section>
 
+    <!-- 团队派发（v0.32.0）
+         ★★ 为什么**单开一页**而不是并进「飞书同步」：虽然两者都是「读写一张多维表格」，
+            但它们的数据流方向和安全边界完全不同 ——
+              飞书同步：我的本地 ⇄ 我自己的表，全量双向，表里只有我的东西；
+              团队派发：我写一条**给别人** / 我从**别人的表**里捞我的那几条。
+            并成一页的话，用户会以为「关掉同步 = 派发也没了」，或者更糟 ——
+            以为派出去的任务也进了自己的镜像表（实际上它故意不进）。
+         ★ 这一页的开关全部**默认关**：它决定的是「要不要把你的任务写进一张
+            别人也能看见的表」+「要不要在没看它的时候跳出来」，风险不对称，
+            默认值就不该对称（与 notify / AI 总开关同一条理由）。
+         ★ 凭据为什么**复用**飞书同步那一份（不另填 appId/appSecret）：
+            同一个应用身份读写团队表，权限点是同一套（bitable:app），
+            再填一份只是多一个会过期的密钥。所以这里只收「表链接」。 -->
+    <section class="sec" id="s-team" hidden>
+      <div class="row wrap">
+        <span class="sw2"><input type="checkbox" id="tmOn"> 已启用</span>
+        <span class="grow"></span>
+        <button class="btn" id="tmTest">测试连接</button>
+      </div>
+      <div class="status" id="tmStat">未配置</div>
+      <div class="report" id="tmReport"></div>
+
+      <div id="tmBody">
+        <!-- ① 我是谁
+             ★★ 这是整条链路里**唯一无法自动获得**的信息：扩展不知道装着它的
+                这个人叫什么。派发人写进表里是为了让对方知道「谁派给我的」——
+                没有它，收到任务的人看见一条无名氏的任务，多半不会去处理。
+             ★ 为什么不做 OAuth 登录拿真实身份：那要新增权限点与一轮授权跳转，
+                代价远大于「填一次名字」。名字精确匹配，不做模糊。 -->
+        <div class="step">
+          <div class="stephd"><i>1</i><span>我是谁</span></div>
+          <label class="fld"><span>我的名字</span>
+            <input type="text" id="tmMe" placeholder="跟组员名单里的写法保持一致" autocomplete="off" spellcheck="false"></label>
+        </div>
+
+        <!-- ② 组员名单
+             ★ 为什么要手填一份：飞书字段列表接口不返回单选字段的 options，
+               所以「从表里读名单」在表是空的新团队上拿不到任何东西 ——
+               而第一次派发恰恰最需要它。手填一次之后，表里的名字会自动并进来。 -->
+        <div class="step">
+          <div class="stephd"><i>2</i><span>组员</span></div>
+          <label class="fld"><span>组员名单</span>
+            <input type="text" id="tmPeople" placeholder="张三、李四、王五" autocomplete="off" spellcheck="false"></label>
+        </div>
+
+        <!-- ③ 团队共用的那张表 -->
+        <div class="step">
+          <div class="stephd"><i>3</i><span>团队表</span></div>
+          <label class="fld"><span>表链接</span>
+            <input type="text" id="tmLink" placeholder="https://xxx.feishu.cn/base/xxxxxx?table=tblxxxxxx" autocomplete="off" spellcheck="false"></label>
+          <details class="adv">
+            <summary>手动填写</summary>
+            <div class="grid2">
+              <label class="fld"><span>Base token</span>
+                <input type="text" id="tmBase" placeholder="/base/ 后面那串" autocomplete="off" spellcheck="false"></label>
+              <label class="fld"><span>数据表 ID</span>
+                <input type="text" id="tmTable" placeholder="tbl 开头的那串" autocomplete="off" spellcheck="false"></label>
+            </div>
+          </details>
+          <div class="row wrap" style="margin-top:10px">
+            <button class="btn sm" id="tmFix">补齐这张表的列</button>
+            <span class="sub" id="tmFixHint"></span>
+          </div>
+        </div>
+
+        <!-- ④ 到达方式
+             ★★ 两个通道**分开两个开关**，因为它们打扰的程度差一个量级：
+               系统通知是「你预期它会出现」的位置（操作系统管的、可随时关）；
+               网页球是在**别人家页面上**弹一句话，边界感弱得多。
+               所以球那条默认关、且要单独勾上 —— 跟 notify.js 那条同款规矩。 -->
+        <div class="step">
+          <div class="stephd"><i>4</i><span>到达</span></div>
+          <div class="row wrap">
+            <label class="sw2"><input type="checkbox" id="tmNotify"><span>系统通知</span></label>
+          </div>
+          <div class="row wrap wact">
+            <button class="btn sm" id="tmTry">现在试一条</button>
+            <span class="sub" id="tmTryHint"></span>
+          </div>
+        </div>
+
+        <div class="row wrap wact">
+          <button class="btn sm" id="tmNow">现在拉一次</button>
+          <span class="sub" id="tmNowHint"></span>
+        </div>
+      </div>
+    </section>
+
     <!-- 悬浮球（v0.11.0）
          ★ 桌面球那一块在 v0.31.0 整个下线了 —— 现在这一页只剩「网页球」和
            「吉祥物」两块，但**这一页仍然要留着**：后面那两块是活控件。
@@ -1217,6 +1306,23 @@ body{
         <div class="wrow">
           <span class="wtag">说话</span>
           <label class="sw2"><input type="checkbox" id="talkOn"><span>点它的时候说一句</span></label>
+        </div>
+      </div>
+
+      <!-- 主动弹提示（v0.32.0）
+           ★★ 单开一格，理由跟上面三格同源，但它管的事有个关键区别：
+             上面几格都是「**你点了它**之后它才动」，这一格是「**没人碰它**它也动」。
+             所以默认关，且关掉之后球**一个字都不许主动说**。
+           ★ 它管的是「允不允许主动弹」；团队派发那边管的是「有没有东西可弹」。
+             两层都开着才会真的弹一句 —— 少任何一层都不弹，也不报错
+             （这种事报错只会更烦）。
+           ★ 存 taskboard.inbox 里的 speakOn（跟团队派发同一个对象）——
+             球和后台都读 Inbox.readCfg()，不可能出现「设置页关了、球还在弹」。
+             代价是写入必须**整块合并**（见 manage.js 里那段同款注释）。 -->
+      <div class="where">
+        <div class="wrow">
+          <span class="wtag">弹提示</span>
+          <label class="sw2"><input type="checkbox" id="wbPush"><span>有派给我的任务时，球主动说一句</span></label>
         </div>
       </div>
 
@@ -1522,7 +1628,7 @@ body{
              真正的版本号由 manage.js 从 manifest 读出来覆盖 ——
              写死在 HTML 里等于第二个版本号出处，manifest 一升版这里就开始说谎，
              而且没有任何症状。 -->
-        <div class="ab-ver"><span id="abVer">v0.31.0</span></div>
+        <div class="ab-ver"><span id="abVer">v0.32.0</span></div>
       </div>
     </section>
 
@@ -1589,6 +1695,7 @@ body{
 <script src="ai.js"></script>
 <script src="feishu.js"></script>
 <script src="sync.js"></script>
+<script src="inbox.js"></script>
 <script src="board.js"></script>
 <!-- 吉祥物核心（v0.24.0）：与网页球共用同一份实现 —— 设置页要用它的
      readConfig / clampSize，那是配置口径的唯一出处，不能在这儿再抄一遍。 -->

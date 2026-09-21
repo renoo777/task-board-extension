@@ -19,6 +19,16 @@ var PKEY = "taskboard.projects"; // 项目列表
 var SYNC_TICK = "taskboard-sync-tick"; // 定时兜底的 alarm 名
 var SYNC_SOON = "taskboard-sync-soon"; // 改动后几秒内的一次性兜底 alarm 名
 var NOTIFY_TICK = "taskboard-notify-tick";  // 主动提醒的检查 alarm 名（v0.25.0）
+/* 团队派发的拉取 alarm（v0.32.0）。
+   ★★ 为什么是 1 分钟而不是更快：chrome.alarms 的周期**最小就是 1 分钟**
+      （再小会被浏览器静默抬到 1 分钟，写了等于没写），而飞书多维表格没有
+      给纯客户端的变更推送（事件订阅要公网回调地址或长连接服务端）。
+      所以「实时」在我们这儿的定义是**分钟级**：P50 约 30 秒，最坏约 70 秒。
+   ★★ 为什么**总是**建这个 alarm，而不是「配好了才建」：闹钟的创建/删除
+      发生在 service worker 里，而 SW 随时会被回收 —— 删漏了就是永远不拉，
+      建漏了就是永远不响，两种都没有任何报错。宁可让它每 60 秒早退一次
+      （成本是一次 storage 读），也不要赌「我一定记得在配置变更时去建它」。 */
+var INBOX_TICK = "taskboard-inbox-tick";
 /* 「最后一次动过任务台」的时间。★ 单独一个键，不塞进任务数据（v1）里：
    它不是任务的一部分，塞进去会污染导出 JSON 与飞书镜像。 */
 var LASTUSE = "taskboard.lastUse";
@@ -116,6 +126,10 @@ function updateBadge() {
   chrome.storage.local.get(KEY, function (o) {
     var d = o[KEY];
     var n = (d && d.tasks) ? d.tasks.filter(function (t) {
+      /* ★ v0.32.0：派发出去的**不计入角标**。角标的意思是「我还有几件没干」，
+         已经交出去的活不占这个数 —— 它现在占的是别人的。
+         （本地那条任务仍然留着，只是不计数；见 inbox.js 抬头 ①。） */
+      if (t.assign && t.assign.to) return false;
       return t.status !== "done" && t.status !== "hold";
     }).length : 0;
     chrome.action.setBadgeText({ text: n ? String(n) : "" });
@@ -264,6 +278,112 @@ function applyNudge() {
   });
 }
 
+/* ---------- 团队派发（v0.32.0）----------
+   这一段是「别人派给我的任务怎么到我手上」的执行端。判定（配额 / 窗口 /
+   文案）全在 Inbox 里，这里只负责**执行**：拉、记账、发、把待播的交给球。
+   分层的理由跟 notify 那条一样：判定写在这儿的话，「为什么没提醒」在真机上
+   只能靠猜，而「没提醒」本身没有任何可见症状。
+
+   ★★ 为什么**不**在收到新任务的瞬间发通知，而是走 1 分钟的轮询：
+      扩展不是服务端，飞书的变更事件订阅要公网回调地址或长连接服务端，
+      这条路上没有。轮询是纯客户端唯一能做的事（见 INBOX_TICK 那条注释）。 */
+function ensureInboxAlarm() {
+  if (!chrome.alarms) return;
+  chrome.alarms.create(INBOX_TICK, { periodInMinutes: 1 });
+}
+
+var INBOX_NID = "taskboard-inbox";
+
+function inboxTick() {
+  if (typeof Inbox === "undefined") return;
+  chrome.storage.local.get([Inbox.CFK, Inbox.ITK, Inbox.PEND], function (o) {
+    var cfg = Inbox.readCfg(o && o[Inbox.CFK]);
+    if (!cfg.on) return;                       // 没启用：一声不响地退出
+    if (typeof Sync === "undefined") return;
+    Sync.readCfg().then(function (sc) {
+      var full = Inbox.withCred(cfg, sc);
+      if (!Inbox.ready(full)) return;
+      return Inbox.pull(full, (o && o[Inbox.ITK]) || []).then(function (res) {
+        var patch = {};
+        patch[Inbox.ITK] = res.items;
+
+        /* 名单自动扩充：表里出现过、名单里还没有的名字并进来 ——
+           新同事第一次被派活之后，下次就不用再手填一次。 */
+        var add = Inbox.addPeople(cfg, res.names);
+        if (add.added.length) { cfg.people = add.people; patch[Inbox.CFK] = cfg; }
+
+        var raw = (o && o[Inbox.PEND]) || {};
+        var seen = {
+          ids: Array.isArray(raw.ids) ? raw.ids : [],
+          sent: Array.isArray(raw.sent) ? raw.sent : [],
+          pending: Array.isArray(raw.pending) ? raw.pending : [],
+          at: Number(raw.at) || 0
+        };
+        if (res.fresh && res.fresh.length) {
+          announce(cfg, res.fresh, seen);
+          patch[Inbox.PEND] = seen;
+        }
+        chrome.storage.local.set(patch);
+      });
+    }).catch(function () {
+      /* 网络错误**故意不出声**：这一分钟拉不到，下一分钟还会再拉。
+         在这里 toast 或发通知的话，断网一小时就是 60 条「拉不到」，
+         而用户对此无能为力 —— 那是纯粹的噪声。 */
+    });
+  });
+}
+
+/* 到货播报。★ 会**就地修改** seen（调用方负责把它写回去）。 */
+function announce(cfg, fresh, seen) {
+  var now = Date.now();
+
+  /* ★★ 无论提不提醒，来过的都记账 —— 「同一条任务只提醒一次」是硬规矩。
+     不记的话，用户把两个提醒通道都关着的那段时间里到的任务，
+     会在他某天打开其中一个通道时**一次性全涌出来**（可能几十条）。 */
+  fresh.forEach(function (x) {
+    if (x && x.id && seen.ids.indexOf(x.id) < 0) seen.ids.push(x.id);
+  });
+  if (cfg.notifyOn !== true && cfg.speakOn !== true) return;
+
+  var g = Inbox.gate({ on: cfg.notifyOn === true, fresh: fresh, now: now, sent: seen.sent });
+
+  if (cfg.notifyOn === true && g.ok && chrome.notifications) {
+    var take = (g.take && g.take.length) ? g.take : [];
+    if (!take.length && g.merge > 0) {
+      /* 额度用完了：合并成一条。★ 不发的话，用户会在任务台里看见新任务、
+         却从没被提醒过 —— 那等于这功能没生效。 */
+      sendInbox(INBOX_NID, Inbox.lineMany(fresh), null, seen);
+    } else {
+      take.forEach(function (it) {
+        sendInbox(INBOX_NID + "-" + it.id, Inbox.line(it), it, seen);
+      });
+    }
+  }
+
+  /* 球那条路：把待播的文案排进队列，球自己来取（球在别人的页面上，
+     后台不该替它决定什么时候开口 —— 它才知道自己现在是不是正被人看着）。 */
+  if (cfg.speakOn === true) {
+    fresh.forEach(function (it) {
+      seen.pending.push({ id: it.id, text: Inbox.line(it) });
+    });
+    seen.at = now;
+  }
+}
+
+function sendInbox(id, text, it, seen) {
+  chrome.notifications.create(id, {
+    type: "basic",
+    iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+    title: "派给你的任务",
+    message: text
+  }, function () {
+    /* ★ 记账必须在**回调里**（确实创建成功之后）—— 与 notify 那条同一个理由：
+       写早了的话，create 失败（系统关了通知 / 勿扰模式）也照样记上，
+       用户会连着好几天什么都收不到，而他完全不知道为什么。 */
+    seen.sent.push({ at: Date.now(), id: (it && it.id) || "" });
+  });
+}
+
 if (chrome.notifications) {
   /* ★★ 两个入口都要接，缺一个就是「某个平台上这条通知是死的」：
      ① onButtonClicked —— Windows / Linux 上通知带按钮；
@@ -281,8 +401,13 @@ if (chrome.notifications) {
   }
   if (chrome.notifications.onClicked) {
     chrome.notifications.onClicked.addListener(function (id) {
-      if (id !== NOTIFY_ID) return;
-      applyNudge();
+      if (id === NOTIFY_ID) { applyNudge(); return; }
+      /* ★ 点了「派给你的任务」那条通知 → 打开任务台。
+         它不像逾期那条有个「拉回今天」的动作可做（任务的主人不是你，
+         你能做的只有去看它），所以这里的动作就是**把界面打开**。 */
+      if (typeof INBOX_NID === "string" && id.indexOf(INBOX_NID) === 0) {
+        openBoard();
+      }
     });
   }
 }
@@ -355,6 +480,59 @@ if (chrome.runtime.onMessage) {
         sendResponse({ ok: true, message: Notify.localLine(f) });
       });
       return true;
+    }
+
+    /* ---------- 团队派发（v0.32.0）----------
+       这四个入口全部排在 `typeof Sync` guard **之前**：它们自己会去取 Sync 的
+       凭据（Inbox.withCred），被那句 return 吃掉的话，设置页那一整块会永远
+       显示「连不上」，而用户根本不知道这两个功能有什么关系。 */
+    if (msg.type === "inbox-test") {
+      if (typeof Inbox === "undefined") { sendResponse({ ok: false, reason: "模块没加载" }); return; }
+      var tc = Inbox.readCfg(msg.cfg);
+      if (!tc.baseToken || !tc.tableId) { sendResponse({ ok: false, reason: "还没填团队表" }); return; }
+      /* 只列字段、不写数据：测试连接不该在别人的表里留下痕迹。 */
+      Feishu.listFields(tc).then(function (fields) {
+        var names = (fields || []).map(function (f) { return f.name; });
+        var tf = Inbox.TF;
+        var miss = Object.keys(tf).filter(function (k) { return names.indexOf(tf[k]) < 0; });
+        sendResponse({
+          ok: miss.length === 0,
+          detail: miss.length ? ("表里还缺这些列：" + miss.map(function (k) { return tf[k]; }).join("、")) : ("列齐全（" + names.length + " 列）"),
+          missing: miss.map(function (k) { return tf[k]; })
+        });
+      }).catch(function (e) {
+        sendResponse({ ok: false, reason: (e && e.message) || String(e) });
+      });
+      return true;
+    }
+    if (msg.type === "inbox-ensure") {
+      if (typeof Inbox === "undefined") { sendResponse({ ok: false, reason: "模块没加载" }); return; }
+      Inbox.ensureTeam(Inbox.readCfg(msg.cfg)).then(function (r) {
+        sendResponse({ ok: !!r.ok, added: r.added, reason: (r.failed || []).join("；") });
+      }).catch(function (e) {
+        sendResponse({ ok: false, reason: (e && e.message) || String(e) });
+      });
+      return true;
+    }
+    if (msg.type === "inbox-try") {
+      if (typeof Inbox === "undefined" || !chrome.notifications) { sendResponse({ ok: false }); return; }
+      /* ★ 试的这一条是**假的**，不写任何存储、不消耗额度 ——
+         用户试完就该还能收到真的那一条。 */
+      var demo = { from: "（示例）", title: "把这份周报发给客户", date: Inbox.todayStr() };
+      chrome.notifications.create(INBOX_NID + "-try", {
+        type: "basic",
+        iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+        title: "派给你的任务",
+        message: Inbox.line(demo)
+      }, function () {});
+      sendResponse({ ok: true, message: Inbox.line(demo) });
+      return;
+    }
+    if (msg.type === "inbox-pull") {
+      if (typeof Inbox === "undefined") { sendResponse({ ok: false, reason: "模块没加载" }); return; }
+      inboxTick();
+      sendResponse({ ok: true, fresh: 0 });
+      return;
     }
 
     if (typeof Sync === "undefined") return;

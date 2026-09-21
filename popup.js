@@ -918,6 +918,205 @@
     }
   }
 
+  /* ---------- 团队派发（v0.32.0）----------
+     这一块分两半，两半的**数据完全隔离**：
+       · 派出去的 —— 写进团队表，本地那条任务留着并挂 `assign` 标记；
+       · 收到的   —— 存 Inbox.ITK，绝不进 st.tasks（进了就会污染角标、
+         导出 JSON、以及个人镜像那张表，而且没有任何报错）。
+     ★★ 这条隔离是硬的不变量，不是「暂时这么写」。 */
+  var inboxItems = [];
+  var inboxCfg = null;
+  var inboxOpen = false;
+  var inboxTimer = null;
+  /* 抽屉里「派发给」当前选中的人。空串 = 不派给任何人。 */
+  var dAssignTo = "";
+
+  function inboxLive(){
+    return (inboxItems || []).filter(function (x) { return x && x.status !== "done"; });
+  }
+
+  function loadInbox(){
+    if (typeof Inbox === "undefined") return Promise.resolve();
+    return Promise.all([Store.get(Inbox.CFK), Store.get(Inbox.ITK)]).then(function (r) {
+      inboxCfg = Inbox.readCfg(r[0] && r[0][Inbox.CFK]);
+      inboxItems = (r[1] && Array.isArray(r[1][Inbox.ITK])) ? r[1][Inbox.ITK] : [];
+      renderInbox();
+    });
+  }
+
+  function renderInbox(){
+    var btn = document.getElementById("inboxBtn");
+    if (!btn) return;
+    var n = inboxLive().length;
+    /* ★ 没有就整条隐藏：摆一个「派给我 0」的按钮，用户点开发现是空的，
+       会以为功能没配好。 */
+    btn.hidden = n === 0;
+    var n1 = document.getElementById("inboxN");
+    var n2 = document.getElementById("inboxFlyN");
+    if (n1) n1.textContent = n;
+    if (n2) n2.textContent = n;
+    if (inboxOpen) renderInboxBody();
+  }
+
+  function renderInboxBody(){
+    var body = document.getElementById("inboxFlyBody");
+    if (!body) return;
+    body.innerHTML = "";
+    var list = inboxItems.slice().sort(function (a, b) {
+      return String(a.date || "9999").localeCompare(String(b.date || "9999"));
+    });
+    if (!list.length) {
+      var e = document.createElement("div");
+      e.className = "holdfly-empty";
+      e.textContent = "还没有人派任务给你";
+      body.appendChild(e);
+      return;
+    }
+    list.forEach(function (it) { body.appendChild(inboxCardEl(it)); });
+  }
+
+  /* ★ 自绘而不是复用 cardEl：cardEl 是给**本地任务**画的，它的点击/拖拽/
+     就地编辑全都拿 `dataset.id` 去 st.tasks 里找那条任务 —— inbox 里的任务
+     根本不在那里，复用会得到一个「点下去什么都没发生」的卡片。
+     它只有两个能做的动作：看、标完成。 */
+  function inboxCardEl(it){
+    var el = document.createElement("article");
+    el.className = "card" + (it.status === "done" ? " is-done" : "");
+    el.dataset.inboxId = it.id || "";
+
+    var title = document.createElement("div");
+    title.className = "ctitle";
+    title.textContent = it.title || "（没写标题）";
+    el.appendChild(title);
+
+    var meta = document.createElement("div");
+    meta.className = "cmeta";
+    if (it.from) {
+      var who = document.createElement("span");
+      who.className = "txt";
+      who.textContent = it.from;
+      meta.appendChild(who);
+    }
+    if (it.date) {
+      var when = document.createElement("span");
+      when.className = "txt";
+      when.textContent = (typeof Inbox !== "undefined") ? Inbox.dateWord(it.date) : it.date;
+      meta.appendChild(when);
+    }
+    el.appendChild(meta);
+
+    /* 标完成：★ 这是 inbox 里唯一允许的动作。不能改标题、不能拖、不能删 ——
+       这条任务的主人不是你，你只能说「我做完了」。 */
+    if (it.status !== "done") {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "ibdone";
+      b.textContent = "完成";
+      b.addEventListener("click", function () { inboxDone(it.id); });
+      el.appendChild(b);
+    }
+    return el;
+  }
+
+  function inboxDone(id){
+    var hit = null;
+    inboxItems.forEach(function (x) { if (x && x.id === id) hit = x; });
+    if (!hit) return;
+    hit.status = "done";
+    hit.doneAt = Date.now();
+    saveInbox();
+    /* 回写团队表让派发人看见。★ 失败也**不回滚**本地：本地「我做完了」
+       是你的事实，团队表只是通知对方；回滚会让按钮点下去毫无反应。 */
+    if (typeof Inbox !== "undefined" && typeof Sync !== "undefined") {
+      Sync.readCfg().then(function (sc) {
+        var full = Inbox.withCred(inboxCfg, sc);
+        if (!Inbox.ready(full)) return;
+        return Inbox.syncBack(full, [hit]);
+      }).catch(function () {});
+    }
+  }
+
+  function saveInbox(){
+    if (typeof Inbox === "undefined") return Promise.resolve();
+    var p = {}; p[Inbox.ITK] = inboxItems;
+    return Store.set(p).then(function () { renderInbox(); });
+  }
+
+  function setInbox(open){
+    inboxOpen = open;
+    var el = document.getElementById("inboxFly");
+    if (!el) return;
+    clearTimeout(inboxTimer);
+    if (open) {
+      /* 互斥：三个浮层盖在同一片区域，同时开只会互相压。 */
+      setFly(false);
+      setArch(false);
+      renderInboxBody();
+      el.hidden = false;
+      nextFrame(function () { el.classList.add("show"); });
+    } else {
+      el.classList.remove("show");
+      inboxTimer = setTimeout(function () { if (!inboxOpen) el.hidden = true; }, 200);
+    }
+  }
+
+  /* ---------- 抽屉里的「派发给」 ---------- */
+  function assignNames(){
+    if (typeof Inbox === "undefined" || !inboxCfg) return [];
+    var me = inboxCfg.me || "";
+    return Inbox.peopleOf(inboxCfg).filter(function (n) { return n !== me; });
+  }
+
+  function buildDAssign(){
+    var btn = document.getElementById("dAssign");
+    if (!btn) return;
+    var names = assignNames();
+    if (!names.length) { btn.hidden = true; return; }
+    btn.hidden = false;
+    var t = dTask();
+    var cur = (t && t.assign && t.assign.to) || "";
+    /* 任务已经派给过某人、而那人不在名单里（名单改过）→ 补一项，
+       否则会静默显示成名单第一个人，下次一存就把接收人改掉了。 */
+    if (cur && names.indexOf(cur) < 0) names.push(cur);
+    dAssignTo = cur;
+    paintDAssign();
+    /* ★ onclick 赋值：抽屉每次打开都重建，累加监听器会让选一次触发 N 次。 */
+    btn.onclick = function () {
+      var opts = ["不派发"].concat(names);
+      toggleSelPop(btn, opts, dAssignTo || "不派发", function (v) {
+        dAssignTo = (v === "不派发") ? "" : v;
+        paintDAssign();
+        dTouch();
+      });
+    };
+  }
+
+  function paintDAssign(){
+    var btn = document.getElementById("dAssign");
+    if (!btn) return;
+    if (!dAssignTo) { setSelValue(btn, "派发给…"); return; }
+    setSelValue(btn, "派给 " + dAssignTo);
+  }
+
+  /* 派发动作。★ 不阻塞保存（fire and forget）：派发要走网络，
+     等它返回再让抽屉保存的话，抽屉会卡在网络上 —— 而本地那条任务是本地的事。
+     失败会 toast 出来（用户点完得知道没派出去）。 */
+  function runDispatch(t, to){
+    if (typeof Inbox === "undefined" || typeof Sync === "undefined") return;
+    Sync.readCfg().then(function (sc) {
+      var full = Inbox.withCred(inboxCfg, sc);
+      if (!Inbox.ready(full)) {
+        toast("派发没配好：去设置页检查一下团队表");
+        return;
+      }
+      return Inbox.dispatch(full, t, to).then(function () {
+        toast("已经派给 " + to);
+      });
+    }).catch(function (e) {
+      toast("派失败：" + ((e && e.message) || "未知原因"));
+    });
+  }
+
   function emptyText(s){
     if (searching) return "没有命中的";
     if (st.tasks.length === 0 && s === "todo") return "在上面输入框记第一笔";
@@ -1940,6 +2139,7 @@
        抽屉一关就全都冒出来）。开抽屉就是一次视角切换，顺手全收掉。 */
     setFly(false);
     setArch(false);
+    setInbox(false);
     closeQuickDate();
     closeSelPop();
 
@@ -1959,6 +2159,10 @@
     if (di) di.value = t.date || "";
     buildDSeg();
     buildDProject();
+    /* ★ 必须在 buildDProject 之后：它要读 dTask() 拿到这条任务**当前**的接收人，
+       而 dTask() 靠 drawerId —— 上面那几行已经把 drawerId 设好了。
+       顺序反过来会读到上一条任务的接收人（症状：打开 A 的抽屉，显示的是 B 的接收人）。 */
+    buildDAssign();
     renderDMeta();
 
     var veil = document.getElementById("dVeil");
@@ -2138,6 +2342,13 @@
     if (!flyOpen) return;
     if (e.target.closest("#holdFly") || e.target.closest("#holdRail")) return;
     setFly(false);
+  });
+
+  // 派给我的：点别处收起（同上，浮层内部与入口按钮除外）
+  document.addEventListener("click", function(e){
+    if (!inboxOpen) return;
+    if (e.target.closest("#inboxFly") || e.target.closest("#inboxBtn")) return;
+    setInbox(false);
   });
 
   /* 捕获行：回车即建。
@@ -2785,6 +2996,15 @@
         renderSyncInd(syncStat);
         wakeSync();   // 隔太久没同步就顺手拉一次
 
+        /* 团队派发：读配置 + 收到的任务，并把两个入口接上。
+           ★ 放在 boot 里而不是模块顶层：这几个元素都在 DOM 里是静态的，
+             但 setInbox / renderInbox 要用到上面那些已经初始化好的状态。 */
+        loadInbox();
+        var ibBtn = document.getElementById("inboxBtn");
+        if (ibBtn) ibBtn.addEventListener("click", function(){ setInbox(!inboxOpen); });
+        var ibX = document.getElementById("inboxClose");
+        if (ibX) ibX.addEventListener("click", function(){ setInbox(false); });
+
         var ti = document.getElementById("newTitle");
         if (ti) { try { ti.focus(); } catch(e){} }
       });
@@ -2813,6 +3033,14 @@
       }
       // 后台同步的状态变化要实时反映到底栏
       if (changes[SKEY]) renderSyncInd(changes[SKEY].newValue);
+      /* 后台轮询拉到了新派发任务 → 底栏那个数**当场**变。
+         ★ 不加这条的话，正在开着弹窗的人要等下一次开弹窗才看见 ——
+           而「派过来一条任务」恰恰是希望他立刻看见的事。 */
+      if (typeof Inbox !== "undefined" && changes[Inbox.ITK]) {
+        var ni = changes[Inbox.ITK].newValue;
+        inboxItems = Array.isArray(ni) ? ni : [];
+        renderInbox();
+      }
       /* 设置页改了使用偏好要**立刻**生效 —— 「数据」按钮就在顶栏上，
          一边开着弹窗一边改设置是很常见的一条路径。 */
       if (changes[PREFKEY]) { prefs = readPrefs(changes[PREFKEY].newValue); renderNlpBar(); }

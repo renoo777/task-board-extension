@@ -66,6 +66,12 @@
        混在一起的话「换个脸」会顺带触发全量重画（onChanged 那条路会把它当数据变）。
      ★ 默认 on:true：老大要的就是「活跃上班氛围」，开关是后悔药不是前提。 */
   var MKEY = "taskboard.mascot";
+  /* 待播队列（v0.32.0 团队派发）。★ 从常量取，不在球这里再写一遍字面量 ——
+     「后台写的是 A、球读的是 B」这类不一致没有任何症状，只能靠人来发现。 */
+  var PK = (typeof window !== "undefined" && window.Inbox && window.Inbox.PEND)
+    ? window.Inbox.PEND : "taskboard.inbox.pending";
+  var IK = (typeof window !== "undefined" && window.Inbox && window.Inbox.CFK)
+    ? window.Inbox.CFK : "taskboard.inbox";
   var MCHAR_DEF = "fox";
   var MSIZE_DEF = 72;
 
@@ -448,7 +454,7 @@
   /* 读一次真实数据。球不存东西 —— 这份只是内存里的画。 */
   function load(cb) {
     if (!HAS_CHROME) { if (cb) cb(); return; }
-    chrome.storage.local.get([KEY, PKEY, POSKEY, ONKEY, MKEY], function (o) {
+    chrome.storage.local.get([KEY, PKEY, POSKEY, ONKEY, MKEY, PK, IK], function (o) {
       var d = o && o[KEY];
       state.tasks = (d && Array.isArray(d.tasks)) ? d.tasks : [];
       state.projects = (o && Array.isArray(o[PKEY])) ? o[PKEY] : [];
@@ -469,6 +475,9 @@
       } else {
         defaultPos();
       }
+      /* ★ v0.32.0：页面刚打开时队列里可能已经有没播的（球不在线的那些分钟里
+         到的任务）。★ 放在 cb 之前：boot() 里会 render，播报要在渲染之后。 */
+      pushSay(o && o[PK], o && o[IK]);
       if (cb) cb();
     });
   }
@@ -608,6 +617,42 @@
     }
     wrap.classList.add("say-on");
     armSayTimer();
+  }
+
+  /* ---------- 主动弹一句：派给我的任务（v0.32.0）----------
+     ★★ 三个开关**与**起来才弹，缺一个都不弹、也不报错：
+        ① 团队派发页的「网页球说一句」（speakOn）—— 默认关，打扰必须先被同意；
+        ② 球本身开着（state.on）—— 球都没了还弹什么；
+        ③ 「点它的时候说一句」（talk）—— 那一个是「说话」的总闸。
+     ★ 为什么 ③ 也要管：它虽然叫「点它的时候」，实际语义是「这颗球允不允许
+       出声」。总闸关着却还能被派发任务弹话，用户只会认为开关坏了。
+
+     ★★ 只播**最后一条**、播完把队列清空：球不在线的那些分钟里可能攒了几条，
+        一口气连着弹三四句，比不弹更招人烦（那正是 Clippy 那一条）。
+        最新那条最有价值 —— 老的那几条在任务台的「派给我的」里照样看得到。
+     ★★ 清空必须**读-改-写**：这个 key 里还存着「哪些已经播过」（ids），
+        整块覆盖写会把它们抹掉 —— 后果是下次同任务再提醒一次。 */
+  function pushSay(v, cfgV) {
+    if (!window.Inbox || !HAS_CHROME) return;
+    if (!v || !Array.isArray(v.pending) || !v.pending.length) return;
+    var cfg = window.Inbox.readCfg(cfgV);
+    if (cfg.speakOn !== true) return;
+    if (!state.on || !state.connected) return;
+    if (state.mc && state.mc.talk === false) return;
+    var last = v.pending[v.pending.length - 1];
+    if (!last || !last.text) return;
+    showSay(last.text, null);
+    chrome.storage.local.get([PK], function (o) {
+      var cur = (o && o[PK]) || {};
+      var next = {
+        ids: Array.isArray(cur.ids) ? cur.ids : [],
+        sent: Array.isArray(cur.sent) ? cur.sent : [],
+        pending: [],
+        at: Date.now()
+      };
+      var patch = {}; patch[PK] = next;
+      try { chrome.storage.local.set(patch); } catch (e) {}
+    });
   }
 
   /* 用户点了它 → 说一句。
@@ -972,6 +1017,14 @@
       /* 换了角色 / 改了尺寸 / 开关：立刻生效，跟形态开关同一条路。
          这一条不写的话，用户在设置页换了个脸，得刷新页面才看得到。 */
       if (changes[MKEY]) applyMc(readMc(changes[MKEY].newValue));
+      /* ★ v0.32.0：后台拉到了派给我的任务 → 该不该开口由这里决定。
+         ★★ 为什么把「允不允许主动弹」放在**球这一侧**而不是后台：
+            球知道自己在别人的页面上、也知道自己现在是不是正被人看着；
+            后台只知道「有东西到了」。让后台替球决定什么时候开口，
+            等于在最没有上下文的地方做最需要上下文的判断。
+         ★★ 开关就是设置页「悬浮球」那一页的「弹提示」，存
+            taskboard.inbox 的 speakOn —— 关掉时这里**一个字都不弹**。 */
+      if (changes[PK]) pushSay(changes[PK].newValue);
       if (!changes[KEY]) return;
       var nv = changes[KEY].newValue;
       state.tasks = (nv && Array.isArray(nv.tasks)) ? nv.tasks : [];

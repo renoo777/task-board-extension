@@ -502,6 +502,37 @@ var Feishu = (function () {
       });
   }
 
+  /* ---------- 原始 fields 写入（v0.32.0：团队派发表用）----------
+     ★★ 为什么另开两个函数，而不是给 batchCreate 加个「字段集」参数：
+        团队表的列名与个人的那张**不是同一套**（多了「接收人」「派发人」），
+        而 toFields() 认的是模块级常量 F —— 给它传参意味着每条调用都要想
+        「这次用哪套」，一旦漏传就静默写进个人表的字段名里（1254045 才报，
+        而且报的是「字段不存在」，看不出是传错了）。
+        开两个只吃**原始 fields** 的函数，团队表那条路从头到尾不碰 F，
+        两套字段集物理隔离，不存在「这次用哪套」这个问题。
+     ★ 复用 seqWrite：分块、块间延迟、重试那些脾气跟个人表是同一套，
+       不在这里另写一份。 */
+  function createRaw(cfg, fieldsArr) {
+    var recs = (fieldsArr || []).map(function (f) { return { fields: f || {} }; });
+    return seqWrite(cfg, "/records/batch_create", function (g) { return { records: g }; }, recs, "records")
+      .then(function (got) {
+        return got.map(function (r) { return { recordId: r.record_id, fields: r.fields || {} }; });
+      });
+  }
+
+  /* pairs = [{recordId, fields}]
+     ★★ 只传**要改的那几列**（v0.32.0 铁律 486）：飞书 batch_update 是
+        按传入的列做覆盖写的，把整行 fields 传回去会**静默盖掉**别人在你
+        读取之后改的那一列（比如派发人刚把日期改了，你回写整行就把它改回去），
+        而且不报任何错。所以调用方只准传增量。 */
+  function updateRaw(cfg, pairs) {
+    var recs = (pairs || []).map(function (p) { return { record_id: p.recordId, fields: p.fields || {} }; });
+    return seqWrite(cfg, "/records/batch_update", function (g) { return { records: g }; }, recs, "records")
+      .then(function (got) {
+        return got.map(function (r) { return { recordId: r.record_id, fields: r.fields || {} }; });
+      });
+  }
+
   /* 批量删除。上限 500，CHUNK 是 100，安全。 */
   function batchDelete(cfg, recordIds) {
     return seqWrite(cfg, "/records/batch_delete", function (g) { return { records: g }; }, recordIds, null)
@@ -966,6 +997,8 @@ var Feishu = (function () {
     batchCreate: batchCreate,
     batchUpdate: batchUpdate,
     batchDelete: batchDelete,
+    createRaw: createRaw,
+    updateRaw: updateRaw,
     selftest: selftest,
     toFields: toFields,
     urlCell: urlCell,

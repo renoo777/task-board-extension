@@ -396,6 +396,15 @@ body.dragging-on .holdfly{pointer-events:none}
 .holdfly-body::-webkit-scrollbar{width:6px}
 .holdfly-body::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
 .holdfly-empty{font-size:11px;color:var(--ink4);text-align:center;padding:16px 0}
+/* 派给我的 · 卡片上那个「完成」按钮（v0.32.0）
+   ★ 它是 inbox 里唯一允许的动作，所以做成一颗安静的小按钮：
+     这条任务的主人不是你，除了「我做完了」你不该改它别的。 */
+.ibdone{
+  margin-top:6px;padding:3px 9px;font-size:11px;line-height:1;
+  color:var(--ink3);background:var(--field);border:1px solid var(--line);
+  border-radius:999px;cursor:pointer;font-family:inherit;
+}
+.ibdone:hover{color:var(--ink);border-color:var(--ink4)}
 
 /* ---------- 归档抽屉 ----------
    归档是**一份只读的历史清单**，不是「第四列」——
@@ -1231,6 +1240,16 @@ html[data-theme="dark"] .bar .tsw .tsw-kn{transform:translateX(26px)}
       <div class="holdfly-body" id="holdFlyBody"></div>
     </div>
 
+    <div class="holdfly" id="inboxFly" hidden>
+      <div class="holdfly-head">
+        <i class="sdot"></i>
+        <span class="name">派给我的</span>
+        <span class="count" id="inboxFlyN">0</span>
+        <button class="x" id="inboxClose" title="收起">×</button>
+      </div>
+      <div class="holdfly-body" id="inboxFlyBody"></div>
+    </div>
+
     <div class="archfly" id="archFly" hidden>
       <div class="archfly-head">
         <i class="sdot"></i>
@@ -1246,6 +1265,13 @@ html[data-theme="dark"] .bar .tsw .tsw-kn{transform:translateX(26px)}
     <span id="stat"></span>
     <span class="hold-stat" id="holdStat" hidden></span>
     <button class="synced" id="syncInd" hidden><span class="dot"></span><span id="syncTxt"></span></button>
+    <!-- 派给我的（v0.32.0）
+         ★★ 为什么必须有独立入口、而不是「它们自己出现在今天那一列」：
+            派到下周的任务在「今天」视图里**根本看不见**，而它恰恰是最需要被看见的
+            （别人交给你、有明确期限的活）。没有这个入口，派发链路等于只完成了一半。
+         ★ 复用 .holdfly 的样式：它已经是「从底栏弹出来的一小叠卡片」，
+           为了一个新浮层再抄一份 CSS，等于给自己多一份要维护的副本。 -->
+    <button class="link act" id="inboxBtn" hidden>派给我 <span id="inboxN">0</span></button>
     <div class="spacer"></div>
     <button class="link act" id="archBtn" hidden>归档</button>
     <button class="link" id="clearDone" title="把已完成的收起来：不再占着已完成列，数据仍在本地（可逐条取回）">归档已完成</button>
@@ -1294,6 +1320,7 @@ html[data-theme="dark"] .bar .tsw .tsw-kn{transform:translateX(26px)}
 <script src="ai.js"></script>
 <script src="feishu.js"></script>
 <script src="sync.js"></script>
+<script src="inbox.js"></script>
 <script src="popup.js"></script>
 </body>
 </html>
