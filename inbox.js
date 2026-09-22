@@ -1,7 +1,9 @@
-/* 任务台 · 团队任务派发（v0.32.0）
+/* 任务台 · 团队任务派发（v0.33.0）
  *
- * 一句话职责：把「我派给别人的任务」写进一张**团队共用**的飞书多维表格，
- * 并从那张表里把「别人派给我的」拉回来，提醒我。
+ * 一句话职责：把「我派给别人的任务」写进一个**团队共用**的飞书多维表格，
+ * 并从那里把「别人派给我的」拉回来，提醒我。
+ * 那个 Base 里有两张子表：一张存任务，一张存组员名单（含「谁是本人」）。
+ * 「一键生成」负责把这两张表和它们的列一次建出来（见 provision）。
  *
  * ============================================================
  * 一、为什么另开一个模块，而不是塞进 sync.js
@@ -31,6 +33,23 @@
  * 扩展不是服务端：飞书多维表格的变更事件订阅要公网回调地址或长连接服务端，
  * 浏览器扩展两样都没有。所以到达靠**轮询**（1 分钟一次，见 background.js）。
  * 这不是偷懒 —— 没有服务端的产品做不到推送，业界通行的纯客户端做法就是轮询。
+ *
+ * ============================================================
+ * 四、两张子表，和「一键生成」（v0.33.0）
+ *
+ * 一个 Base、两张表：
+ *   「任务」—— 派出去的活（字段集 TF，10 列）
+ *   「组员」—— 名单 + 谁是本人（字段集 PTF，2 列：姓名 / 身份）
+ *
+ * ★ 为什么名单要进表、不再留在设置页手填：名单和「我是谁」是**全组共有的事实**。
+ *   留在每个人的扩展里，就会出现「A 机器上名单是旧的、B 机器上多了个新同事」——
+ *   这种不一致零症状，你只会某天发现派错了人，或者新同事一直没收到活。
+ * ★ 一键生成的两条入口（provision）：
+ *   没填 Base → 新建一个（应用是所有者，所以顺手把链接设成「组织内可编辑」，
+ *               否则你在飞书网页里打开只能看、填不了名单）；
+ *   填了 Base → 在那个 Base 里补表补列，**绝不新建第二个**。
+ * ★ 认表是**ID 优先、名字兜底**（ensureTable）：老大那张表可能改了名，
+ *   按名字找会把他的表当成不存在再建一张 —— 数据分家且零报错。
  */
 (function (root) {
   "use strict";
@@ -73,6 +92,34 @@
     createdAt: "创建时间",
     doneAt: "完成时间"
   };
+
+  /* ---------- 组员表的字段（v0.33.0）----------
+     ★★ 为什么名单要单开一张表，而不是继续在设置页手填：
+        名单和「我是谁」是**全组共有的事实**。放在每个人的扩展里，就会出现
+        「A 机器上名单是旧的、B 机器上多了个新同事」—— 这种不一致零症状，
+        你只会某天发现派错了人，或者新同事一直收不到活。
+        挪进表里之后，谁加了人，全组下一次轮询就都看得到。
+     ★ 用「身份」单选（本人 / 组员）而不是复选框：单选 type 3 是这套 schema 里
+        已经跑通的类型，而且表里一眼能看出谁是本人。
+     ★ 姓名用**单行文本**，跟任务表的「接收人 / 派发人」同一套写法 ——
+        精确匹配、不做模糊（「张伟」和「张伟伟」是两个人）。 */
+  var PTF = {
+    name: "姓名",
+    role: "身份"
+  };
+  var ROLE_ME = "本人";
+  var ROLE_MEMBER = "组员";
+  var PEOPLE_SCHEMA = [
+    { field_name: PTF.name, type: 1 },
+    { field_name: PTF.role, type: 3, property: { options: [{ name: ROLE_ME }, { name: ROLE_MEMBER }] } }
+  ];
+
+  /* 两张子表的名字 + 新建 Base 的名字。
+     ★ 表名只用于「对应 ID 还没填」时的首次生成 —— 已经填了 ID 的一律认 ID，
+       见 ensureTable（按名字找会把老大那张改了名的表当成不存在，再建一张）。 */
+  var TASK_TABLE_NAME = "任务";
+  var PEOPLE_TABLE_NAME = "组员";
+  var BASE_NAME = "任务台 · 团队";
 
   var STATUS_TEXT = { todo: "待办", doing: "进行中", done: "已完成" };
   var STATUS_BACK = { "待办": "todo", "进行中": "doing", "已完成": "done" };
@@ -134,6 +181,30 @@
   function trim(s) { return String(s == null ? "" : s).trim(); }
   function uid() { return "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
+  /* ---------- 单元格解析（任务表 / 组员表共用）----------
+     ★ 抽到顶层而不是各写一份：两张表都要解「单行文本」和「单选」。
+       一旦写成两份，漂移的症状是「这张表认得出来、那张表读成 [object Object]」，
+       而两条链路的单测各测各的、全绿 —— 又是一次「绿的那边骗了我」。
+     ★ sel 递归 + 认对象：单选读回来可能是 "待办"、["待办"] 或
+       [{text:"待办"}]，三种形态都得认（飞书不同版本回的不一样）。 */
+  function txt(v) {
+    if (v == null) return "";
+    if (typeof v === "string") return trim(v);
+    if (Array.isArray(v)) {
+      return v.map(function (x) {
+        if (x == null) return "";
+        if (typeof x === "string") return x;
+        return trim(x.text || x.name || "");
+      }).join("").trim();
+    }
+    return trim(v.text || v.name || "");
+  }
+  function sel(v) {
+    if (Array.isArray(v)) return v.length ? sel(v[0]) : "";
+    if (v && typeof v === "object") return trim(v.text || v.name || "");
+    return trim(v);
+  }
+
   /* ---------- 配置 ----------
      ★ `on` 严格 true：这个开关决定的是「要不要把你的任务写进一张别人也能看见的表」，
        默认必须关（跟 notify 那条同一个理由：风险不对称，默认值就不该对称）。
@@ -148,6 +219,14 @@
       appSecret: trim(v.appSecret),
       baseToken: trim(v.baseToken),
       tableId: trim(v.tableId),
+      /* ★ v0.33.0：组员表 + 这个 Base 的网页地址。
+         ★ peopleTableId 不进 ready()：没有组员表照样能派发（名单走本地缓存那份），
+           少一个前置条件就少一种「明明能用却点不动」的死锁。 */
+      peopleTableId: trim(v.peopleTableId),
+      baseUrl: trim(v.baseUrl),
+      /* 上次拉组员表的时间。轮询靠它决定「这一分钟要不要去拉」——
+         跟别的字段一样只是个数值，界面上看不见。 */
+      peopleAt: Number(v.peopleAt) || 0,
       notifyOn: v.notifyOn === true,
       speakOn: v.speakOn === true
     };
@@ -172,16 +251,31 @@
     return o;
   }
 
+  /* 造一份「换了表」的 cfg（v0.33.0）。
+     ★ feishu.js 的 joinUrl 只读 cfg.baseToken / cfg.tableId，所以浅拷贝一份、
+       换掉这两个字段，就能让 listAll / listFields / createField / createRaw
+       全部直接对**另一张表**工作 —— 不用给它们各加一个 tableId 参数。
+     ★ 为什么不做成「加参数」：多一个参数意味着每个调用点都要想
+       「这次传哪张表」，漏传**不会报错**，只会安静地读到任务表里去。
+       派生一份 cfg 从根上没有这个问题。 */
+  function derived(cfg, appToken, tableId) {
+    var o = {};
+    Object.keys(cfg || {}).forEach(function (k) { o[k] = cfg[k]; });
+    o.baseToken = trim(appToken) || o.baseToken;
+    o.tableId = trim(tableId) || o.tableId;
+    return o;
+  }
+
   /* 名字匹配：★ 精确、trim 之后比。不做模糊 —— 「张伟」和「张伟伟」是两个人，
      模糊匹配会静默把任务派错人，而这种错没有任何提示。 */
   function sameName(a, b) { return trim(a) === trim(b); }
 
   /* ---------- 组员名单 ----------
-     两个来源合并：① 设置里手填的那份（第一次就有得选）；
-                   ② 团队表里出现过的名字（拉表时自动补进来）。
-     ★ 为什么要手填的那份：`listFields()` 拿不到单选字段的 options（只回
-       name/type/uiType），所以「从字段选项读名单」这条路是断的。
-       表是空的新团队更是一行记录都没有 —— 没有手填那份，第一次派发就无从选人。 */
+     ★ v0.33.0：名单的**来源是组员表**（见 listPeople），这里读的是它在本地那份
+       缓存 —— 断网时照样能派发；不同步只可能发生在网断着的那一小段时间，
+       下一次轮询就追平了。
+     ★ 精确匹配、不做模糊：「张伟」和「张伟伟」是两个人，模糊匹配会静默派错人，
+       而派错这件事没有任何提示。 */
   function peopleOf(cfg) {
     var out = [], seen = {};
     trim(cfg && cfg.people).split(/[,，、;；\n\r]+/).forEach(function (s) {
@@ -191,16 +285,53 @@
     return out;
   }
 
-  function addPeople(cfg, names) {
-    var cur = peopleOf(cfg);
-    var seen = {};
-    cur.forEach(function (n) { seen[n] = 1; });
-    var added = [];
-    (names || []).forEach(function (s) {
-      var n = trim(s);
-      if (n && !seen[n]) { seen[n] = 1; cur.push(n); added.push(n); }
+  /* ---------- 组员表：读（v0.33.0）----------
+     表是名单与「我是谁」的**唯一事实源**，本地的 cfg.people / cfg.me
+     只是它的缓存（断网时照着用）。
+     ★ 为什么读不到要保留原值、而不是清空：一次网络抖动不该把名单清掉 ——
+       清掉之后派发下拉会瞬间变空，而原因（「这次没拉到」）按本项目的界面
+       约束**一个字都不会显示**，用户只会觉得「名单莫名没了」。 */
+  function fromPeopleFields(rec) {
+    var f = (rec && rec.fields) || {};
+    return { name: txt(f[PTF.name]), role: sel(f[PTF.role]) };
+  }
+
+  function fromPeopleRecords(recs) {
+    var people = [], me = "", seen = {};
+    (recs || []).forEach(function (rec) {
+      var p = fromPeopleFields(rec);
+      if (!p.name) return;
+      if (!seen[p.name]) { seen[p.name] = 1; people.push(p.name); }
+      /* 只认第一个「本人」：表里标了两个的话那是编辑事故，
+         认表里靠上的那个（跟行序一致），而不是随机认一个。 */
+      if (!me && p.role === ROLE_ME) me = p.name;
     });
-    return { people: cur.join("、"), added: added };
+    return { people: people, me: me };
+  }
+
+  function listPeople(cfg) {
+    var pid = trim(cfg && cfg.peopleTableId);
+    if (!pid) return Promise.reject(new Error("还没配组员表"));
+    return Feishu.listAll(derived(cfg, cfg.baseToken, pid)).then(function (recs) {
+      var got = fromPeopleRecords(recs);
+      /* 时间戳在这儿盖、不在 fromPeopleRecords 里盖：那个是纯解析函数，
+         混进 Date.now() 之后就没法写「给定输入必得同一输出」的断言了。 */
+      got.at = Date.now();
+      return got;
+    });
+  }
+
+  /* 把读回来的名单并进配置。空结果不动本地（理由见上面那段）。 */
+  function applyPeople(cfg, got) {
+    var o = readCfg(cfg);
+    var p = (got && got.people) || [];
+    if (p.length) o.people = p.join("、");
+    if (trim(got && got.me)) o.me = trim(got.me);
+    /* 记一笔「刚拉过」——轮询靠它判断这一分钟要不要再去拉组员表。
+       ★ 只有真读过才盖时间戳：读失败还盖的话，会变成「每 5 分钟才试一次」，
+         网断的时候恢复得比预期慢。 */
+    if (got && got.at) o.peopleAt = Number(got.at) || o.peopleAt;
+    return o;
   }
 
   /* ---------- 字段转换 ---------- */
@@ -239,22 +370,6 @@
   /* 团队表的一行 → 本地 inbox 条目。 */
   function fromTeamFields(rec) {
     var f = (rec && rec.fields) || {};
-    function sel(v) {
-      if (Array.isArray(v)) return v.length ? trim(v[0]) : "";
-      return trim(v);
-    }
-    function txt(v) {
-      if (v == null) return "";
-      if (typeof v === "string") return trim(v);
-      if (Array.isArray(v)) {
-        return v.map(function (x) {
-          if (x == null) return "";
-          if (typeof x === "string") return x;
-          return trim(x.text || x.name || "");
-        }).join("").trim();
-      }
-      return trim(v.text || v.name || "");
-    }
     var lid = txt(f[TF.localId]);
     return {
       id: lid || (rec && rec.recordId) || uid(),
@@ -439,11 +554,10 @@
       var seenIds = {};
       (known || []).forEach(function (x) { if (x && x.id) seenIds[x.id] = 1; });
       var fresh = m.added.filter(function (x) { return x && x.id && !seenIds[x.id]; });
-      /* ★ 顺手把表里出现过的名字并进名单：新同事第一次被派活之后，
-         下次就不用再手填一次（见 peopleOf 的注释）。 */
-      var names = [];
-      all.forEach(function (x) { if (x.to) names.push(x.to); if (x.from) names.push(x.from); });
-      return { items: m.items, added: m.added, fresh: fresh, names: names };
+      /* ★ v0.33.0：这里原来还会「把任务表里出现过的名字并进名单」。
+         名单改由组员表提供之后删掉了 —— 留着的话名单就有**两个来源**，
+         而这个功能的全部意义就是「名单只有一处、谁加了人全组都看得见」。 */
+      return { items: m.items, added: m.added, fresh: fresh };
     });
   }
 
@@ -466,23 +580,138 @@
     return Feishu.updateRaw(cfg, pairs).then(function () { return pairs.length; });
   }
 
-  /* ---------- 补列：团队表缺哪列建哪列 ---------- */
-  function ensureTeam(cfg) {
-    return Feishu.listFields(cfg).then(function (fields) {
+  /* ---------- 一键生成：一个 Base + 两张子表（v0.33.0）----------
+     产出：①「任务」—— 派出去的活；②「组员」—— 名单 + 谁是本人。
+     两种入口合成同一个动作：
+       · 还没填 Base → 新建一个，并把链接设成「组织内拿到链接的人可编辑」。
+         ★ 这一步**不需要任何人授权**：文档归应用自己（它是所有者），
+           缺的只是「人手动在飞书网页里改」这一件事，而改分享设置就够了。
+           不设的话，你在飞书网页打开它只能看，填不了名单。
+       · 已经填了 Base → 就在那个 Base 里补表补列，**绝不新建第二个**。
+     ★ 幂等：表在就补列、不在才建、列齐就一个写请求都不发。可以反复点。
+     ★ 不 throw：分步留痕。一句「生成失败」看不出卡在权限、字段名还是网络，
+       所以每一步的成败都记进 steps[]，设置页照着显示就行。
+     ★ 「补齐这张表的列」这个旧按钮已经并进来了 —— 它是一键生成的**真子集**
+       （表已存在时一键生成干的就是补列）。两个按钮并排只会让人犹豫点哪个。 */
+  function provision(cfg, opts) {
+    opts = opts || {};
+    var steps = [];
+    var out = {
+      ok: false, error: "",
+      baseToken: "", baseUrl: "", created: false,
+      tableId: "", peopleTableId: "",
+      steps: steps
+    };
+    function rec(name, ok, detail, optional) {
+      steps.push({ name: name, ok: !!ok, detail: detail || "", optional: !!optional });
+    }
+
+    var known = trim(cfg && cfg.baseToken);
+    var head = known
+      ? Promise.resolve({ appToken: known, url: "", fresh: false, defaultTableId: "" })
+      : Feishu.createBase(cfg, opts.baseName || BASE_NAME).then(function (b) {
+        rec("建了一个新的多维表格", true, b.url || b.appToken);
+        return {
+          appToken: b.appToken, url: b.url || "",
+          fresh: true, defaultTableId: b.defaultTableId || ""
+        };
+      });
+
+    return head.then(function (b) {
+      out.baseToken = b.appToken;
+      out.baseUrl = b.url;
+      out.created = !!b.fresh;
+      if (!b.fresh) rec("用你填的那个多维表格", true, b.appToken);
+
+      return ensureTable(cfg, b.appToken, cfg.tableId, TASK_TABLE_NAME, TEAM_SCHEMA)
+        .then(function (r) {
+          out.tableId = r.tableId;
+          rec((r.created ? "建了" : "用上了") + "「" + TASK_TABLE_NAME + "」子表", true,
+            r.added && r.added.length ? ("补上 " + r.added.length + " 列") : "");
+        })
+        .then(function () {
+          return ensureTable(cfg, b.appToken, cfg.peopleTableId, PEOPLE_TABLE_NAME, PEOPLE_SCHEMA);
+        })
+        .then(function (r) {
+          out.peopleTableId = r.tableId;
+          rec((r.created ? "建了" : "用上了") + "「" + PEOPLE_TABLE_NAME + "」子表", true,
+            r.added && r.added.length ? ("补上 " + r.added.length + " 列") : "");
+        })
+        .then(function () {
+          /* 新 Base 自带一张平台默认表，清掉它 —— 不清的话你打开会看到三张表。
+             ★ 只在「这次新建的 Base」上做：你原有 Base 里的表我们一张都不动。 */
+          if (!b.fresh || !b.defaultTableId) return null;
+          if (b.defaultTableId === out.tableId || b.defaultTableId === out.peopleTableId) return null;
+          return Feishu.dropTable(cfg, b.appToken, b.defaultTableId).then(function () {
+            rec("清掉平台自带的那张空表", true, "");
+          }, function () {
+            rec("清掉平台自带的那张空表", false, "没删掉，留着不影响使用", true);
+          });
+        })
+        .then(function () {
+          /* 分享设置只改**新建**的 Base：你自己那张表的分享是你的事，我们不碰。 */
+          if (!b.fresh) return null;
+          return Feishu.setLinkEditable(cfg, b.appToken).then(function () {
+            rec("让拿到链接的人能编辑", true, "你和同事在飞书网页里可以直接改这两张表", true);
+          }, function (e) {
+            rec("让拿到链接的人能编辑", false,
+              "没设上（" + ((e && e.message) || "未知原因") + "）。扩展读写不受影响，" +
+              "只是你在飞书网页里打开它只能看", true);
+          });
+        });
+    }).then(function () {
+      out.ok = true;
+      return out;
+    }, function (e) {
+      out.error = (e && e.message) || String(e);
+      rec("中止", false, out.error);
+      return out;
+    });
+  }
+
+  /* 认表：**ID 优先、名字兜底**，然后把缺的列补上。
+     ★ 为什么 ID 优先：老大那张团队表可能改了名，按名字找会把他的表当成
+       「不存在」再建一张 —— 数据分家（旧表还在写、新表永远是空的），零报错。
+     ★ 名字兜底只服务首次生成 —— 那时候还没有 ID 可认。 */
+  function ensureTable(cfg, appToken, knownId, name, schema) {
+    var id = trim(knownId);
+    if (id) {
+      return fillFields(cfg, appToken, id, schema).then(function (added) {
+        return { tableId: id, created: false, added: added };
+      });
+    }
+    return Feishu.listTables(cfg, appToken).then(function (tables) {
+      var hit = (tables || []).filter(function (t) { return trim(t.name) === name; })[0];
+      if (hit) {
+        return fillFields(cfg, appToken, hit.tableId, schema).then(function (added) {
+          return { tableId: hit.tableId, created: false, added: added };
+        });
+      }
+      return Feishu.createTable(cfg, appToken, name, schema).then(function (tid) {
+        return { tableId: tid, created: true, added: [] };
+      });
+    });
+  }
+
+  /* 表里缺哪列建哪列，返回建上的列名。
+     ★ 一列失败不中断，剩下的接着建：中途 return 会让「第三列失败」变成
+       「后面七列都没建」，而报告里只写一条原因，看起来像只缺一列。 */
+  function fillFields(cfg, appToken, tableId, schema) {
+    var d = derived(cfg, appToken, tableId);
+    return Feishu.listFields(d).then(function (fields) {
       var by = {};
       (fields || []).forEach(function (f) { by[f.name] = f; });
-      var missing = TEAM_SCHEMA.filter(function (fd) { return !by[fd.field_name]; });
-      if (!missing.length) return { ok: true, added: [], missing: [] };
-      var i = 0, added = [], failed = [];
+      var missing = (schema || []).filter(function (fd) { return !by[fd.field_name]; });
+      var added = [];
+      var i = 0;
       function step() {
-        if (i >= missing.length) return { ok: !failed.length, added: added, missing: failed };
+        if (i >= missing.length) return Promise.resolve(added);
         var fd = missing[i++];
-        return Feishu.createField(cfg, fd).then(function () {
+        return Feishu.createField(d, fd).then(function () {
           added.push(fd.field_name);
           return step();
-        }, function (e) {
-          failed.push(fd.field_name + "（" + ((e && e.message) || "未知原因") + "）");
-          return step();
+        }, function () {
+          return step();   /* 失败也往下走，原因由上层按「缺了哪列」体现 */
         });
       }
       return step();
@@ -492,14 +721,20 @@
   var api = {
     CFK: CFK, ITK: ITK, PEND: PEND,
     TF: TF, TEAM_SCHEMA: TEAM_SCHEMA,
+    PTF: PTF, PEOPLE_SCHEMA: PEOPLE_SCHEMA, ROLE_ME: ROLE_ME,
+    TASK_TABLE_NAME: TASK_TABLE_NAME, PEOPLE_TABLE_NAME: PEOPLE_TABLE_NAME,
     WINDOW_H: WINDOW_H, WINDOW_MAX: WINDOW_MAX,
     store: defaultStore,
     readCfg: readCfg,
     ready: ready,
     withCred: withCred,
+    derived: derived,
     sameName: sameName,
     peopleOf: peopleOf,
-    addPeople: addPeople,
+    fromPeopleFields: fromPeopleFields,
+    fromPeopleRecords: fromPeopleRecords,
+    listPeople: listPeople,
+    applyPeople: applyPeople,
     toTeamFields: toTeamFields,
     fromTeamFields: fromTeamFields,
     mineOnly: mineOnly,
@@ -518,7 +753,8 @@
     pull: pull,
     backFields: backFields,
     syncBack: syncBack,
-    ensureTeam: ensureTeam,
+    provision: provision,
+    ensureTable: ensureTable,
     todayStr: todayStr,
     uid: uid
   };

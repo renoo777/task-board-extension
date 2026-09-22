@@ -302,6 +302,28 @@ function ensureInboxAlarm() {
 
 var INBOX_NID = "taskboard-inbox";
 
+/* 组员表多久拉一次（v0.33.0）。★ 名单变动极少，没必要跟着 1 分钟的节奏跑。 */
+var INBOX_PEOPLE_GAP = 5 * 60 * 1000;
+
+/* 拉一次组员表，把名单与「我是谁」写回配置，返回**合并后的配置**（没配表时返回 null）。
+   ★ 为什么写配置这件事放在后台、而不是设置页：这条链路是**轮询**在跑，
+     设置页很可能根本没开着。
+   ★ 读-改-写：传进来的 cfg 是 tick 开始那一刻的快照，中间可能已经过去几秒，
+     直接拿它整块写会把这几秒里的别的改动（比如用户刚拨的通知开关）一起抹掉。 */
+function inboxPeople(cfg) {
+  if (typeof Inbox === "undefined" || !cfg.peopleTableId) return Promise.resolve(null);
+  return Inbox.listPeople(cfg).then(function (got) {
+    return new Promise(function (res) {
+      chrome.storage.local.get([Inbox.CFK], function (o) {
+        var cur = Inbox.applyPeople(o && o[Inbox.CFK], got);
+        var patch = {};
+        patch[Inbox.CFK] = cur;
+        chrome.storage.local.set(patch, function () { res(cur); });
+      });
+    });
+  });
+}
+
 function inboxTick() {
   if (typeof Inbox === "undefined") return;
   chrome.storage.local.get([Inbox.CFK, Inbox.ITK, Inbox.PEND], function (o) {
@@ -311,14 +333,21 @@ function inboxTick() {
     Sync.readCfg().then(function (sc) {
       var full = Inbox.withCred(cfg, sc);
       if (!Inbox.ready(full)) return;
-      return Inbox.pull(full, (o && o[Inbox.ITK]) || []).then(function (res) {
+
+      /* ★ v0.33.0：组员表跟任务表绑在**同一个 tick** 里，但频率低得多 ——
+         名单是全组共有的事实，一天顶多变一次，每分钟拉一遍纯属白烧配额。
+         5 分钟一次，派发下拉里新加的人最多迟到 5 分钟可见。
+         ★ 顺序有讲究：**先拉组员、再拉任务** —— pull() 靠 me 过滤「哪些是给我的」，
+           用刚读到的 me 才认得出今天刚改过的那一行。 */
+      var due = (Date.now() - (Number(cfg.peopleAt) || 0)) >= INBOX_PEOPLE_GAP;
+      var chain = due ? inboxPeople(full).catch(function () { return null; })
+                      : Promise.resolve(null);
+
+      return chain.then(function (next) {
+        return Inbox.pull(next || full, (o && o[Inbox.ITK]) || []);
+      }).then(function (res) {
         var patch = {};
         patch[Inbox.ITK] = res.items;
-
-        /* 名单自动扩充：表里出现过、名单里还没有的名字并进来 ——
-           新同事第一次被派活之后，下次就不用再手填一次。 */
-        var add = Inbox.addPeople(cfg, res.names);
-        if (add.added.length) { cfg.people = add.people; patch[Inbox.CFK] = cfg; }
 
         var raw = (o && o[Inbox.PEND]) || {};
         var seen = {
@@ -503,20 +532,60 @@ if (chrome.runtime.onMessage) {
         var names = (fields || []).map(function (f) { return f.name; });
         var tf = Inbox.TF;
         var miss = Object.keys(tf).filter(function (k) { return names.indexOf(tf[k]) < 0; });
-        sendResponse({
-          ok: miss.length === 0,
-          detail: miss.length ? ("表里还缺这些列：" + miss.map(function (k) { return tf[k]; }).join("、")) : ("列齐全（" + names.length + " 列）"),
-          missing: miss.map(function (k) { return tf[k]; })
+        if (miss.length) {
+          sendResponse({
+            ok: false,
+            detail: "表里还缺这些列：" + miss.map(function (k) { return tf[k]; }).join("、"),
+            missing: miss.map(function (k) { return tf[k]; })
+          });
+          return;
+        }
+        /* ★ v0.33.0：顺手读一次组员表 —— 「我是谁」「组员名单」那两格输入框删掉
+           之后，这里是设置页**唯一**能验证「名单和本人到底读到没有」的地方。
+           ★ 只读、不写配置：测试就是测试，改配置是设置页 tmKeep 的事。 */
+        var base = "列齐全（" + names.length + " 列）";
+        return Inbox.listPeople(tc).then(function (got) {
+          var n = (got.people || []).length;
+          sendResponse({
+            ok: true,
+            detail: base + (got.me
+              ? ("，组员 " + n + " 人，我是「" + got.me + "」")
+              : "，组员表里还没有标「本人」的那一行"),
+            me: got.me
+          });
+        }, function () {
+          sendResponse({ ok: true, detail: base + "，但还没配组员表（点「一键生成」）" });
         });
       }).catch(function (e) {
         sendResponse({ ok: false, reason: (e && e.message) || String(e) });
       });
       return true;
     }
-    if (msg.type === "inbox-ensure") {
+    if (msg.type === "inbox-setup") {
       if (typeof Inbox === "undefined") { sendResponse({ ok: false, reason: "模块没加载" }); return; }
-      Inbox.ensureTeam(Inbox.readCfg(msg.cfg)).then(function (r) {
-        sendResponse({ ok: !!r.ok, added: r.added, reason: (r.failed || []).join("；") });
+      /* 一键生成：建 Base（没填的话）+ 两张子表 + 补列。
+         ★ 只把结果回给调用方，**不在这里写配置** —— 写配置的唯一入口是设置页
+           的 tmKeep（读-改-写）。在这里整块写的话，会把用户在这几秒里
+           改过的别的东西（比如刚拨的通知开关）一起抹掉。 */
+      Inbox.provision(Inbox.readCfg(msg.cfg)).then(function (r) {
+        sendResponse({
+          ok: !!r.ok, reason: r.error || "", steps: r.steps || [],
+          baseToken: r.baseToken, baseUrl: r.baseUrl,
+          tableId: r.tableId, peopleTableId: r.peopleTableId
+        });
+      }).catch(function (e) {
+        sendResponse({ ok: false, reason: (e && e.message) || String(e) });
+      });
+      return true;
+    }
+    if (msg.type === "inbox-people") {
+      /* 手动拉一次组员表 —— 设置页在「一键生成」之后叫一声，
+         这样在飞书里填完人不必等满一个轮询周期。 */
+      if (typeof Inbox === "undefined") { sendResponse({ ok: false, reason: "模块没加载" }); return; }
+      inboxPeople(Inbox.readCfg(msg.cfg)).then(function (next) {
+        sendResponse(next
+          ? { ok: true, people: next.people, me: next.me }
+          : { ok: false, reason: "还没有组员表" });
       }).catch(function (e) {
         sendResponse({ ok: false, reason: (e && e.message) || String(e) });
       });

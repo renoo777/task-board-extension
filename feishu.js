@@ -747,11 +747,17 @@ var Feishu = (function () {
       });
   }
 
-  /* 建数据表 + 全套字段。一次请求建完 9 列，比一列一列加稳。 */
-  function createTable(cfg, appToken, name) {
+  /* 建数据表 + 全套字段。一次请求建完一整列，比一列一列加稳。
+     ★ v0.33.0：第 4 个参数 schema 可以传**另一套字段集** —— 团队派发要在同一个
+       Base 里建两张表（任务 / 组员），字段集跟个人表不是同一套。不传就还是
+       FIELD_SCHEMA，老调用点一个字都不用改。
+     ★ 为什么字段必须在**建表这一次请求**里带上，而不是建完空表再补列：
+       分两步做，中途失败会在用户的 Base 里留一张空表 ——
+       而他看见的只是「我的表里多了一张没用的」，根本不知道是半截产物。 */
+  function createTable(cfg, appToken, name, schema) {
     var url = API + "/bitable/v1/apps/" + encodeURIComponent(appToken) + "/tables";
     return call(cfg, "POST", url, {
-      table: { name: name || TABLE_NAME, fields: FIELD_SCHEMA }
+      table: { name: name || TABLE_NAME, fields: schema || FIELD_SCHEMA }
     }).then(function (d) {
       if (!d || !d.table_id) throw err("CREATE_TABLE", "飞书没有返回 table_id");
       return d.table_id;

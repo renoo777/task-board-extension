@@ -1750,7 +1750,7 @@ function aiBind(){
       /* 初值：这里不能直接用 r[7] 那份 —— 团队派发那段可能还没跑、也可能刚改过。
          读一次最新值最稳，代价只是一次 storage 读。 */
       Store.get(IKKEY).then(function (o) {
-        pushBox.checked = Inbox.readCfg(o && o[IKKEY]).speakOn === true;
+        pushBox.checked = Inbox.readCfg(o).speakOn === true;
       });
       pushBox.addEventListener("change", function () {
         var on = !!pushBox.checked;
@@ -1830,8 +1830,6 @@ function aiBind(){
       var onBox = document.getElementById("tmOn");
       if (!onBox || typeof Inbox === "undefined") return;
       var body = document.getElementById("tmBody");
-      var meEl = document.getElementById("tmMe");
-      var ppEl = document.getElementById("tmPeople");
       var linkEl = document.getElementById("tmLink");
       var baseEl = document.getElementById("tmBase");
       var tblEl = document.getElementById("tmTable");
@@ -1839,7 +1837,7 @@ function aiBind(){
       var repEl = document.getElementById("tmReport");
       var tryHint = document.getElementById("tmTryHint");
       var nowHint = document.getElementById("tmNowHint");
-      var fixHint = document.getElementById("tmFixHint");
+      var makeHint = document.getElementById("tmMakeHint");
 
       var cfg = Inbox.readCfg(r[7]);
 
@@ -1849,7 +1847,18 @@ function aiBind(){
          绝不直接用内存里那份 cfg 去覆盖 storage（见上面 tmKeep 那条注释）。 */
       tmKeep = function (patch) {
         return Store.get(IKKEY).then(function (o) {
-          var cur = Inbox.readCfg(o && o[IKKEY]);
+          /* ★★★ v0.33.0 修：「读最新 → 打补丁 → 整块写回」里的**读**原来写错了 ——
+             `Inbox.readCfg(o && o[IKKEY])`。
+             ★ `Store.get(key)` 已经把外层拆掉了（它内部 `return o[key]`），
+               所以 `o` **就是配置本身**；再按 key 索引一次恒为 undefined，
+               readCfg(undefined) 得到**全默认值**，于是每次落盘都先把
+               baseToken / tableId / me / people / notifyOn 一起清成默认，
+               再把这次的补丁盖上去 —— 症状是「拨一下团队开关，表就没了」。
+             ★ 为什么它骗过了所有人（包括 v0.32.0 那次真机验收）：开关**本身**是生效的
+               （补丁那一项确实写进去了），坏的只是**同一份配置里的兄弟字段**。
+               只有「改一项前先写进另一项，看它还在不在」这种断言能发现。
+               ⇒ `_test_manage.js` Pass H 补了这条（读-改-写的「读」必须真读到东西）。 */
+          var cur = Inbox.readCfg(o);
           Object.keys(patch || {}).forEach(function (k) { cur[k] = patch[k]; });
           cfg = cur;
           return Store.set(cur, IKKEY);
@@ -1861,10 +1870,12 @@ function aiBind(){
         /* ★ 配置区整体跟着开关显隐：关着的时候摆一堆输入框，
            用户会以为「填了就生效」，而实际上整条链路是断的。 */
         if (body) body.hidden = !cfg.on;
-        if (meEl) meEl.value = cfg.me;
-        if (ppEl) ppEl.value = cfg.people;
         if (baseEl) baseEl.value = cfg.baseToken;
         if (tblEl) tblEl.value = cfg.tableId;
+        /* ★ 链接框只在**它还是空的时候**用存下来的地址回填。
+           用户自己粘进去的那串一个字都不动 —— 我们没有他的租户域名，
+           拿 baseToken 重新拼一遍只会得到一个打不开的链接。 */
+        if (linkEl && !linkEl.value) linkEl.value = cfg.baseUrl || "";
         if (ntEl) ntEl.checked = cfg.notifyOn === true;
       }
 
@@ -1876,8 +1887,6 @@ function aiBind(){
 
       /* 文本类输入：change 时落盘（不是 input —— 每敲一个字写一次 storage，
          敲快了会把上一次还没落的值冲掉，而且没必要）。 */
-      if (meEl) meEl.addEventListener("change", function(){ tmKeep({ me: meEl.value }); });
-      if (ppEl) ppEl.addEventListener("change", function(){ tmKeep({ people: ppEl.value }); });
       if (baseEl) baseEl.addEventListener("change", function(){ tmKeep({ baseToken: baseEl.value }); });
       if (tblEl) tblEl.addEventListener("change", function(){ tmKeep({ tableId: tblEl.value }); });
 
@@ -1922,14 +1931,38 @@ function aiBind(){
         });
       });
 
-      var fixBtn = document.getElementById("tmFix");
-      if (fixBtn) fixBtn.addEventListener("click", function(){
-        say(fixHint, "正在检查…");
+      /* 一键生成：建 Base（没填的话）+「任务」「组员」两张子表 + 补缺的列。
+         ★ 回填走 tmKeep（唯一写入口，内部是读-改-写）—— 后台只回结果、
+           绝不自己写配置：它手里那份是几秒前的快照，直接写会把这期间
+           的其它改动（比如你刚拨的通知开关）一起抹掉。 */
+      var makeBtn = document.getElementById("tmMake");
+      if (makeBtn) makeBtn.addEventListener("click", function(){
+        say(makeHint, "正在生成…");
         withSync().then(function (full) {
-          if (!full) { say(fixHint, "先配好飞书应用"); return; }
-          return sendToBg({ type: "inbox-ensure", cfg: full }).then(function (res) {
-            if (!res || !res.ok) { say(fixHint, "补列失败：" + ((res && res.reason) || "未知原因")); return; }
-            say(fixHint, res.added && res.added.length ? ("补上了：" + res.added.join("、")) : "列已经齐了");
+          if (!full) { say(makeHint, "先在「飞书同步」里配好应用"); return; }
+          /* ★ 这里**不用**原生二次确认：这一步是幂等的（表在就补列、列齐就一个写请求都不发），
+             不会覆盖或删除任何东西 —— 而原生确认会打断整页，jsdom 里还直接抛。
+             本项目的门：全项目只留「飞书建表」那一处 confirm，那处是真的会替换掉配置。 */
+          return sendToBg({ type: "inbox-setup", cfg: full }).then(function (res) {
+            if (!res || !res.ok) {
+              say(makeHint, "没生成成功：" + ((res && res.reason) || "未知原因"));
+              return;
+            }
+            return tmKeep({
+              baseToken: res.baseToken,
+              baseUrl: res.baseUrl || cfg.baseUrl,
+              tableId: res.tableId,
+              peopleTableId: res.peopleTableId
+            }).then(function () {
+              if (linkEl && res.baseUrl) linkEl.value = res.baseUrl;
+              var bad = (res.steps || []).filter(function (s) { return !s.ok && !s.optional; });
+              say(makeHint, bad.length
+                ? ("有两步没成：" + bad.map(function (s) { return s.name; }).join("、"))
+                : "两张子表都好了");
+              /* 顺手拉一次组员表：新建的表当然是空的，但**你那个 Base 里可能已经有了** ——
+                 有的话这一步就读进来了，不用等满一个轮询周期。 */
+              return sendToBg({ type: "inbox-people" });
+            });
           });
         });
       });
