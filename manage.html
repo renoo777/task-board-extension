@@ -1122,7 +1122,11 @@ body{
         <span class="grow"></span>
         <button class="btn" id="tmTest">测试连接</button>
       </div>
-      <div class="status" id="tmStat">未配置</div>
+      <!-- ★ 这一块原来有一行常驻的「未配置 / 已配置」状态字。
+           删掉 —— 界面上不放状态文字（这一条在本项目里被反复重申过）：
+           「填没填完」由**输入框自己**说（空着就是没填），
+           「连不连得上」由「测试连接」点下去之后的那次回执说。
+           摆一行常驻状态，用户只会多一个需要核对的地方，而它还会过期。 -->
       <div class="report" id="tmReport"></div>
 
       <div id="tmBody">

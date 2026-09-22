@@ -23,6 +23,17 @@
   var LIBKEY = "taskboard.mc.customs";
   /* ★ 团队派发配置（v0.32.0）。同样从常量取，理由与 NTKEY 一模一样。 */
   var IKKEY = (typeof Inbox !== "undefined" && Inbox.CFK) ? Inbox.CFK : "taskboard.inbox";
+  /* ★★★ v0.32.0 事故：下面那个 `tmKeep` 原来**没在这儿声明**，直接在 wireTeam 里
+     写了一句 `tmKeep = function (patch) {...}`。本文件是 `"use strict"`，
+     **给没声明过的变量赋值会抛 ReferenceError** —— 而赋值点正好在启动那一串
+     `.then` 的中间，于是一抛之后**后面所有接线一次都没执行**，
+     症状就是「设置页所有东西点了没反应」（老大报的就是这个）。
+     ★★ 为什么测试一个都没红：测试跑在 **jsdom** 里，而 jsdom **没有实现**这条规则
+     —— 同样的两句 Node(V8) 里必抛，jsdom 里会**静默泄漏成 window.tmKeep**。
+     ⇒ 「某个规则在我的测试环境里不存在」时，那条规则在测试里**永远是绿的**。
+     ★ 所以这里必须**先声明**（值为 null），wireTeam 里再赋值；`_validate.py` 里
+       也补了一条静态门：IIFE 里被赋值的名字必须在同文件里有 var/let/const/function 声明。 */
+  var tmKeep = null;
   /* 自定义那一组/那一格的显示名。★ 用**常量**而不是在几处各写一遍字面量：
      「设置页那格叫一个名字、快照里叫另一个」是那种没人会去查的不一致。 */
   var CUSTOM_GROUP = "自定义";
@@ -1825,7 +1836,6 @@ function aiBind(){
       var baseEl = document.getElementById("tmBase");
       var tblEl = document.getElementById("tmTable");
       var ntEl = document.getElementById("tmNotify");
-      var statEl = document.getElementById("tmStat");
       var repEl = document.getElementById("tmReport");
       var tryHint = document.getElementById("tmTryHint");
       var nowHint = document.getElementById("tmNowHint");
@@ -1856,11 +1866,6 @@ function aiBind(){
         if (baseEl) baseEl.value = cfg.baseToken;
         if (tblEl) tblEl.value = cfg.tableId;
         if (ntEl) ntEl.checked = cfg.notifyOn === true;
-        if (statEl) {
-          statEl.textContent = cfg.on
-            ? (Inbox.ready(cfg) ? "已配置" : "还差团队表")
-            : "未启用";
-        }
       }
 
       onBox.addEventListener("change", function(){

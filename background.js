@@ -11,8 +11,16 @@
    的守卫会**安静地提前 return**：闹钟照样每小时响一次、存储照样读、什么都不报错，
    而通知**永远不会出现** —— 一个「功能整块失效但零症状」的形态。
    ★ 顺序无所谓（它是纯函数模块，不依赖前三个），排最后只是保持「先来的在前」。 */
+/* ★★★ v0.32.0：inbox.js 同样**必须**进 SW —— 跟上面 notify.js 是同一个坑、
+   同一种形态（连顺序都无所谓：inbox.js 也是纯函数模块，不依赖前几个）。
+   漏掉它的后果完全相同且同样安静：inboxTick() 里 `typeof Inbox === "undefined"`
+   的守卫、以及消息入口里那句 `{ok:false, reason:"模块没加载"}` 会让
+   「到达提醒」**整条链静默失效** —— 闹钟照样每分钟响、表里数据照样在、
+   而谁都收不到派给自己的任务。
+   ★ 它当初确实被漏过一次（并发编辑把那次改动吃掉了），而当时**没有任何门**盯着
+     这份名单 —— `_test_background.js` 现在补了一条（见那边的注释）。 */
 if (typeof importScripts === "function")
-  importScripts("feishu.js", "sync.js", "notify.js");
+  importScripts("feishu.js", "sync.js", "notify.js", "inbox.js");
 
 var KEY = "taskboard.v1";        // 任务数据
 var PKEY = "taskboard.projects"; // 项目列表

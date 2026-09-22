@@ -57,6 +57,18 @@
     priority: "优先级",
     localId: "本地ID",
     assignee: "接收人",
+    /* ★★ v0.32.0（老大拍板）：派发人**不从设置页手填的那个名字来**，
+       而是**读表里那一列「我是谁」** —— 谁往表里填的这条记录，
+       那一列写着谁，谁就是派发人。
+       ★ 为什么这样更对：以前「我是谁」是本地配置，同一个人在别人机器上的
+         扩展里派出来就是另一个名字，而收件方根本无从判断；改读表之后，
+         **列的归属感由表格保证**（谁建的这一行谁负责），跟装在哪台机器上无关。
+       ★ 兼容两种填法（读取侧统一兜住）：
+         ① 文本列（`type 1`）—— 我们一键建表时建的就是这个，API 可写；
+         ② 老大在表格里把这一列改成「人员」/「创建人」类型也照样认 ——
+            那种字段读回来是 `[{id, name, en_name}]`，取 `name`。
+       ★ 旧列 `from`（原「派发人」）降为**回退读取**：老表还没补这一列时照样能读。 */
+    who: "我是谁",
     from: "派发人",
     createdAt: "创建时间",
     doneAt: "完成时间"
@@ -77,7 +89,7 @@
     { field_name: TF.priority, type: 3, property: { options: [{ name: "高" }, { name: "中" }] } },
     { field_name: TF.localId, type: 1 },
     { field_name: TF.assignee, type: 1 },
-    { field_name: TF.from, type: 1 },
+    { field_name: TF.who, type: 1 },
     { field_name: TF.createdAt, type: 5, property: { date_formatter: "yyyy/MM/dd HH:mm", auto_fill: false } },
     { field_name: TF.doneAt, type: 5, property: { date_formatter: "yyyy/MM/dd HH:mm", auto_fill: false } }
   ];
@@ -217,7 +229,9 @@
     if (t.priority && PRIORITY_TEXT[t.priority]) f[TF.priority] = PRIORITY_TEXT[t.priority];
     f[TF.localId] = trim(t.id) || uid();
     f[TF.assignee] = trim(to);
-    f[TF.from] = trim(from);
+    /* ★ v0.32.0：写「我是谁」那一列（派发人的唯一落点），不再写旧列「派发人」。
+       ★ 旧列仍在表上的话会是空的 —— 没有关系：读取那边把它当回退，读得到就用。 */
+    f[TF.who] = trim(from);
     f[TF.createdAt] = Date.now();
     return f;
   }
@@ -251,7 +265,11 @@
       priority: PRIORITY_BACK[sel(f[TF.priority])] || "",
       status: STATUS_BACK[sel(f[TF.status])] || "todo",
       to: txt(f[TF.assignee]),
-      from: txt(f[TF.from]),
+      /* ★★ v0.32.0：派发人**先读「我是谁」那一列**，空的再回退旧列「派发人」。
+         ★ `txt()` 同时兜住「人员 / 创建人」类型（值是 [{id,name}]，取 name）——
+           所以老大把这一列改成飞书的「创建人」字段（谁新建这条记录就自动填谁）
+           之后，**连填都不用填**，派发人照样认得出来。 */
+      from: txt(f[TF.who]) || txt(f[TF.from]),
       at: Date.now()
     };
   }
