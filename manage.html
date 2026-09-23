@@ -1138,11 +1138,27 @@ body{
              ★ 一个 Base、两张子表：「任务」存派出去的活，「组员」存名单 + 谁是本人。
              ★ 「一键生成」是幂等的：表在就补列、不在才建，可以反复点。
                 没填 Base 时它会新建一个，并把链接设成「组织内拿到链接的人可编辑」——
-                不设的话你在飞书网页里打开它只能看、填不了名单。 -->
+                不设的话你在飞书网页里打开它只能看、填不了名单。
+             ★ v0.34.0：它最后还会把这张表的**归属**转给你 —— 光有「能编辑」
+                是不够的（那只是「被邀请的协作者」）：没有归属就看不到管理入口、
+                改不了权限、也移不走它。认你的两个来源见下面那两格。 -->
         <div class="step">
           <div class="stephd"><i>1</i><span>团队表</span></div>
           <label class="fld"><span>表链接</span>
             <input type="text" id="tmLink" placeholder="https://xxx.feishu.cn/base/xxxxxx?table=tblxxxxxx" autocomplete="off" spellcheck="false"></label>
+          <!-- ★★ v0.34.0：这一格**只为一件事服务** —— 把一键生成出来的那张多维表格的
+               **归属**转给你。应用（tenant_access_token）建的云文档**归应用自己**，
+               你在飞书里只是「被邀请的协作者」：能改，但看不到管理入口、改不了权限、
+               也移不走它。老大真机的原话就是「我没有编辑跟管理权限，
+               我需要一键创建多维表格，多维表格的归属人是我」。
+               ★ 为什么邮箱就够：转移所有者的接口认 email / openid / userid，
+                 而 **email 是唯一不需要先知道 open_id 的一种** ——
+                 你知道自己的邮箱，这件事就成了，不需要额外授权、不需要你去开放平台翻。
+               ★ 留空**不算错**：那时改从「组员」子表里标「本人」那行的人员字段读 open_id，
+                 只是要多点一次按钮（首次生成时那张表还是空的，得先去飞书里填人）。
+               ★ 界面上只有标签和 placeholder，没有说明文字（本项目的硬约束）。 -->
+          <label class="fld"><span>我的飞书邮箱</span>
+            <input type="text" id="tmMail" placeholder="填了就把这张表转给你" autocomplete="off" spellcheck="false"></label>
           <details class="adv">
             <summary>手动填写</summary>
             <div class="grid2">
@@ -1618,7 +1634,7 @@ body{
              真正的版本号由 manage.js 从 manifest 读出来覆盖 ——
              写死在 HTML 里等于第二个版本号出处，manifest 一升版这里就开始说谎，
              而且没有任何症状。 -->
-        <div class="ab-ver"><span id="abVer">v0.33.0</span></div>
+        <div class="ab-ver"><span id="abVer">v0.34.0</span></div>
       </div>
     </section>
 

@@ -1819,11 +1819,15 @@ function aiBind(){
     }
 
     /* ---------- 团队派发（v0.32.0）----------
-       ★★ 这一块是 v0.32.0 的主干：把「派任务给别人」和「收到别人派的任务」
-          两条链路上唯一需要人手填的东西收在这儿 —— 我是谁、组员、团队表。
-       ★ 为什么「我是谁」必须手填：扩展不知道装着它的这个人叫什么，
-          而派发人恰恰是收件方决定「要不要处理」的第一条信息。
-          （做 OAuth 拿真实身份的代价远大于填一次名字，所以不做。）
+       ★★ 这一块是这一整条链路唯一的重心：把「派任务给别人」和「收到别人派的任务」
+          两条链路上需要人手准备的东西收在这儿 —— 那张团队表、钥匙、到达方式。
+       ★ 为什么这里**不再有「我是谁」和「组员名单」两格**（v0.33.0 删的）：
+          这两样是全组的公共事实，现在都存在那张多维表格的「组员」子表里，
+          从表里读。两处各存一份必然出现「设置页改了、表里没变」，而它零症状。
+       ★ v0.34.0 新增一格「我的飞书邮箱」：它**只**服务一件事 ——
+          把一键生成出来的那张表**转移到你名下**（见 inbox.js provision 最后一步）。
+          应用建的云文档归应用自己，光设「组织内可编辑」只让你**能改**，
+          而所有者仍然不是你。这一格是「知道你的邮箱就够」的那个最小代价。
        ★ 表链接粘进来就拆出 baseToken / tableId（复用 parseBaseLink），
           跟飞书同步那条路同一个手势。 */
     (function wireTeam(){
@@ -1833,6 +1837,7 @@ function aiBind(){
       var linkEl = document.getElementById("tmLink");
       var baseEl = document.getElementById("tmBase");
       var tblEl = document.getElementById("tmTable");
+      var mailEl = document.getElementById("tmMail");
       var ntEl = document.getElementById("tmNotify");
       var repEl = document.getElementById("tmReport");
       var tryHint = document.getElementById("tmTryHint");
@@ -1876,6 +1881,7 @@ function aiBind(){
            用户自己粘进去的那串一个字都不动 —— 我们没有他的租户域名，
            拿 baseToken 重新拼一遍只会得到一个打不开的链接。 */
         if (linkEl && !linkEl.value) linkEl.value = cfg.baseUrl || "";
+        if (mailEl) mailEl.value = cfg.ownerMail;
         if (ntEl) ntEl.checked = cfg.notifyOn === true;
       }
 
@@ -1889,6 +1895,7 @@ function aiBind(){
          敲快了会把上一次还没落的值冲掉，而且没必要）。 */
       if (baseEl) baseEl.addEventListener("change", function(){ tmKeep({ baseToken: baseEl.value }); });
       if (tblEl) tblEl.addEventListener("change", function(){ tmKeep({ tableId: tblEl.value }); });
+      if (mailEl) mailEl.addEventListener("change", function(){ tmKeep({ ownerMail: mailEl.value }); });
 
       if (linkEl) linkEl.addEventListener("change", function(){
         var p = parseBaseLink(linkEl.value);
@@ -1956,9 +1963,12 @@ function aiBind(){
             }).then(function () {
               if (linkEl && res.baseUrl) linkEl.value = res.baseUrl;
               var bad = (res.steps || []).filter(function (s) { return !s.ok && !s.optional; });
+              /* ★ v0.34.0：归属转成了就直说 —— 「这张表归你了」是老大点名要的结果，
+                 不能跟「两张子表都好了」混成同一句话（那听起来像是建完了、
+                 但归属还挂在一个应用名下）。 */
               say(makeHint, bad.length
                 ? ("有两步没成：" + bad.map(function (s) { return s.name; }).join("、"))
-                : "两张子表都好了");
+                : (res.ownerDone ? "两张子表都好了，这张表归你了" : "两张子表都好了"));
               /* 顺手拉一次组员表：新建的表当然是空的，但**你那个 Base 里可能已经有了** ——
                  有的话这一步就读进来了，不用等满一个轮询周期。 */
               return sendToBg({ type: "inbox-people" });

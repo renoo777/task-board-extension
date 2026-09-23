@@ -571,7 +571,10 @@ if (chrome.runtime.onMessage) {
         sendResponse({
           ok: !!r.ok, reason: r.error || "", steps: r.steps || [],
           baseToken: r.baseToken, baseUrl: r.baseUrl,
-          tableId: r.tableId, peopleTableId: r.peopleTableId
+          tableId: r.tableId, peopleTableId: r.peopleTableId,
+          /* ★ v0.34.0：归属有没有转成，要一路带回设置页 ——
+             「这张表归你了」和「两张子表都好了」是两句不同的话。 */
+          ownerDone: !!r.ownerDone, ownerWhy: r.ownerWhy || ""
         });
       }).catch(function (e) {
         sendResponse({ ok: false, reason: (e && e.message) || String(e) });

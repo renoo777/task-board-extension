@@ -39,7 +39,7 @@
  *
  * 一个 Base、两张表：
  *   「任务」—— 派出去的活（字段集 TF，10 列）
- *   「组员」—— 名单 + 谁是本人（字段集 PTF，2 列：姓名 / 身份）
+ *   「组员」—— 名单 + 谁是本人（字段集 PTF，3 列：姓名 / 成员 / 身份）
  *
  * ★ 为什么名单要进表、不再留在设置页手填：名单和「我是谁」是**全组共有的事实**。
  *   留在每个人的扩展里，就会出现「A 机器上名单是旧的、B 机器上多了个新同事」——
@@ -50,6 +50,26 @@
  *   填了 Base → 在那个 Base 里补表补列，**绝不新建第二个**。
  * ★ 认表是**ID 优先、名字兜底**（ensureTable）：老大那张表可能改了名，
  *   按名字找会把他的表当成不存在再建一张 —— 数据分家且零报错。
+ *
+ * ============================================================
+ * 五、归属：这张表得是你自己的（v0.34.0）
+ *
+ * 应用（tenant_access_token）建的云文档**归应用自己**，人在飞书里只是
+ * 「被邀请的协作者」。上一版靠 setLinkEditable 让人**能改**，但所有者仍然不是他：
+ * 看不到管理入口、改不了权限、也移不走。老大真机的原话是
+ * 「我的飞书账号没有编辑跟管理权限，我需要一键创建多维表格，多维表格的归属人是我」。
+ * ⇒ 只有转移所有者一条路，见 Feishu.transferOwner。
+ *
+ * ★ 「我是谁」在这里有**两个来源**，谁先有就用谁：
+ *   a) 配置里的「我的飞书邮箱」—— 建表那一刻就有，一次到位；
+ *   b) 组员表里标「本人」那行的人员字段 open_id —— 首次生成时表是空的，
+ *      只能等他填完再点一次（幂等，可以反复点）。
+ *   两个都没有**不影响任何功能**：扩展读写这张表本来就不依赖归属。
+ *
+ * ★★ 为什么组员表非要有「成员」这个**人员字段**（type 11）：
+ *   只有它带 open_id。派发对象本身只要名字就够（文本列也能存），
+ *   但「把这表转给本人」「以后给他发飞书消息」都要 open_id ——
+ *   文本列做不到，等到需要时再补一个字段，存量数据就得人手重填一遍。
  */
 (function (root) {
   "use strict";
@@ -93,7 +113,7 @@
     doneAt: "完成时间"
   };
 
-  /* ---------- 组员表的字段（v0.33.0）----------
+  /* ---------- 组员表的字段（v0.33.0 / v0.34.0）----------
      ★★ 为什么名单要单开一张表，而不是继续在设置页手填：
         名单和「我是谁」是**全组共有的事实**。放在每个人的扩展里，就会出现
         「A 机器上名单是旧的、B 机器上多了个新同事」—— 这种不一致零症状，
@@ -101,16 +121,31 @@
         挪进表里之后，谁加了人，全组下一次轮询就都看得到。
      ★ 用「身份」单选（本人 / 组员）而不是复选框：单选 type 3 是这套 schema 里
         已经跑通的类型，而且表里一眼能看出谁是本人。
-     ★ 姓名用**单行文本**，跟任务表的「接收人 / 派发人」同一套写法 ——
-        精确匹配、不做模糊（「张伟」和「张伟伟」是两个人）。 */
+     ★★ v0.34.0：「成员」是一列**人员字段**（type 11）—— 老大原话
+        「这个成员要从多维表格的**成员字段**里面去拉」。
+        ★ 为什么必须是人员类型、不能再开一列文本：人员字段存的是飞书用户对象
+          `[{id:"ou_xxx", name:"张三"}]`，那个 `id` 就是 open_id。有了 open_id 才能
+          ① 把这张多维表格的**归属转给本人**（transfer_owner 要 open_id/邮箱）；
+          ② 以后要发飞书消息通知也只差一步。文本列只有一个名字，这两件事都做不到。
+        ★ 姓名列**仍然留着**，而且它有第二个身份：它是**初始索引字段**——
+          索引字段只支持 文本/数字/日期/电话/超链接/公式/地理位置，
+          **人员不在其中**（单选也不在，这条 v0.33.0 已经踩过一次：1254012）。
+          所以索引列只能是文本，人员字段只能排第二。
+        ★ 姓名列**可以留空**：人员字段自己带 name，读取时兜住（见 fromPeopleFields）——
+          这样填表的人只需在下拉里选一次人，不用再手打一遍名字。 */
   var PTF = {
     name: "姓名",
+    member: "成员",
     role: "身份"
   };
   var ROLE_ME = "本人";
   var ROLE_MEMBER = "组员";
   var PEOPLE_SCHEMA = [
     { field_name: PTF.name, type: 1 },
+    /* ★ property.multiple:false —— 这一列**只该是一个人**。默认是 true（允许多选），
+       不显式关掉的话，下拉里能勾一串人，而「接收人」在整条链路上都是单值：
+       读取只取第一个（userOf），于是表里选了三个、派发只认一个，零报错。 */
+    { field_name: PTF.member, type: 11, property: { multiple: false } },
     { field_name: PTF.role, type: 3, property: { options: [{ name: ROLE_ME }, { name: ROLE_MEMBER }] } }
   ];
 
@@ -205,6 +240,33 @@
     return trim(v);
   }
 
+  /* ---------- 人员字段解析（v0.34.0）----------
+     ★ 跟 txt/sel 一起放在顶层：**任务表和组员表都要解人员字段**
+       （任务表的「我是谁」允许被老大改成人员/创建人类型，见 TF.who 那段）。
+       写成两份的话，漂移的症状是「组员表认得出来、任务表读成 [object Object]」，
+       而两条链路的单测各测各的、全绿 —— 又是一次「绿的那边骗了我」。
+     ★ 认三种形态（飞书不同版本回的不一样，跟 sel 那条同一个理由）：
+       ① `[{id:"ou_x", name:"张三"}]` —— 现行文档里的样子；
+       ② `[{open_id:"ou_x", name:"张三"}]` —— 少数版本拿 open_id 当键名；
+       ③ `{id:"ou_x"}` / 裸字符串 `"ou_x"` —— 手写测试数据里就是这么给的。
+     ★ 只回**第一个**：组员表的「成员」列是单值（multiple:false），任务表的
+       「我是谁」也只该有一个人。多个人是编辑事故，取靠上的那个（跟行序一致），
+       而不是随机认一个。
+     ★ 姓名与 id **分开回**：要 id 的地方（转移归属）不能因为姓名读到了就以为拿到 id 了，
+       这两个字段的可得性没有任何关系。 */
+  function userOf(v) {
+    var arr = Array.isArray(v) ? v : (v == null || v === "" ? [] : [v]);
+    for (var i = 0; i < arr.length; i++) {
+      var x = arr[i];
+      if (x == null || x === "") continue;
+      if (typeof x === "string") return { id: trim(x), name: "" };
+      var id = trim(x.id || x.open_id || x.openId || "");
+      var nm = trim(x.name || x.en_name || "");
+      if (id || nm) return { id: id, name: nm };
+    }
+    return { id: "", name: "" };
+  }
+
   /* ---------- 配置 ----------
      ★ `on` 严格 true：这个开关决定的是「要不要把你的任务写进一张别人也能看见的表」，
        默认必须关（跟 notify 那条同一个理由：风险不对称，默认值就不该对称）。
@@ -224,6 +286,15 @@
            少一个前置条件就少一种「明明能用却点不动」的死锁。 */
       peopleTableId: trim(v.peopleTableId),
       baseUrl: trim(v.baseUrl),
+      /* ★★ v0.34.0：「我的飞书邮箱」。**只为一件事服务** —— 把一键生成出来的
+         那张多维表格的归属转给本人（见 Feishu.transferOwner）。
+         ★ 为什么需要它、而不是「从组员表读自己的 open_id」：
+           组员表是**建表之后**才填的，而转移归属要发生在**建的那一次**；
+           只走组员表的话，老大必须「点一次 → 去飞书填 → 再点一次」。
+           邮箱是唯一能在第一次就把归属做对的凭据（transfer_owner 认 email）。
+         ★ 留空也**不算错**：那时回退到「读组员表里标『本人』那行的人员字段」，
+           只是要多点一次。两条路都在，谁先有就用谁。 */
+      ownerMail: trim(v.ownerMail),
       /* 上次拉组员表的时间。轮询靠它决定「这一分钟要不要去拉」——
          跟别的字段一样只是个数值，界面上看不见。 */
       peopleAt: Number(v.peopleAt) || 0,
@@ -293,20 +364,32 @@
        约束**一个字都不会显示**，用户只会觉得「名单莫名没了」。 */
   function fromPeopleFields(rec) {
     var f = (rec && rec.fields) || {};
-    return { name: txt(f[PTF.name]), role: sel(f[PTF.role]) };
+    var u = userOf(f[PTF.member]);
+    return {
+      /* ★ v0.34.0：姓名的**两个来源**，文本列优先、人员字段兜底。
+         顺序不能反：可能两个人重名、而人员字段选得又不一样 ——
+         文本列是填表的人**手打**的那一个，那是他认定要显示的名字。 */
+      name: txt(f[PTF.name]) || u.name,
+      role: sel(f[PTF.role]),
+      /* open_id（或裸邮箱/手机号那串）。**只在这一行**能拿到 ——
+         它是「把这张表转给本人」和「以后给他发飞书消息」的唯一凭据。 */
+      uid: u.id
+    };
   }
 
   function fromPeopleRecords(recs) {
-    var people = [], me = "", seen = {};
+    var people = [], me = "", meId = "", seen = {};
     (recs || []).forEach(function (rec) {
       var p = fromPeopleFields(rec);
+      /* 姓名与人员字段**都没有**的行跳过：那是一行空记录（新建 Base 里常有一条），
+         把它当成组员会往派发下拉里塞一个空字符串选项。 */
       if (!p.name) return;
       if (!seen[p.name]) { seen[p.name] = 1; people.push(p.name); }
       /* 只认第一个「本人」：表里标了两个的话那是编辑事故，
          认表里靠上的那个（跟行序一致），而不是随机认一个。 */
-      if (!me && p.role === ROLE_ME) me = p.name;
+      if (!me && p.role === ROLE_ME) { me = p.name; meId = p.uid; }
     });
-    return { people: people, me: me };
+    return { people: people, me: me, meId: meId };
   }
 
   function listPeople(cfg) {
@@ -600,6 +683,10 @@
       ok: false, error: "",
       baseToken: "", baseUrl: "", created: false,
       tableId: "", peopleTableId: "",
+      /* ★ v0.34.0：这张表最后归谁。ownerDone 给设置页改回执用
+         （「两张子表都好了」→「两张子表都好了，这张表归你了」）；
+         ownerWhy 只在真的要转却没转成时有值。 */
+      ownerDone: false, ownerWhy: "",
       steps: steps
     };
     function rec(name, ok, detail, optional) {
@@ -657,6 +744,60 @@
             rec("让拿到链接的人能编辑", false,
               "没设上（" + ((e && e.message) || "未知原因") + "）。扩展读写不受影响，" +
               "只是你在飞书网页里打开它只能看", true);
+          });
+        })
+        .then(function () {
+          /* ★★★ v0.34.0：把这张多维表格的**归属**转给本人。
+             ★★ 为什么非做不可：应用建的文档**归应用自己**，你在飞书里只是
+               「被邀请的协作者」—— 上一版的 setLinkEditable 只让你**能改**，
+               但所有者仍然不是你（看不到管理入口、改不了权限、移不走它）。
+             ★ 为什么放在整条链路**最后**：前面任何一步挂了都不该动归属 ——
+               一张列都没补全的表先转出去，出问题时应用就不好收拾了。
+             ★ 两个来源，谁先有就用谁：
+               a) 配置里的「我的飞书邮箱」—— 建表那一刻就有，一次到位；
+               b) 组员表里标「本人」那行的人员字段 open_id —— 首次生成时表是空的，
+                  只能等他填完再点一次（幂等，可以反复点）。
+             ★★ 为什么**不看 b.fresh**、每次都试着转：
+               你这个 Base 可能是应用以前建的（那应用就是所有者，该转），
+               也可能是你自己在飞书里建的（那本来就是你的，不该转）——
+               这两种情况下 baseToken 都已填、fresh 都是 false，**从 fresh 分不出来**。
+               而多试一次的代价只是一个请求：不是所有者时飞书回 403，
+               我们把它当「本来就归你」静默跳过（见下面那段）。 */
+          var mail = trim(cfg && cfg.ownerMail);
+          if (mail) return { mt: "email", mid: mail, src: "邮箱" };
+          if (!out.peopleTableId) return null;
+          return Feishu.listAll(derived(cfg, b.appToken, out.peopleTableId)).then(function (recs) {
+            var meId = fromPeopleRecords(recs).meId;
+            return meId ? { mt: "openid", mid: meId, src: "组员表" } : null;
+          }, function () { return null; });
+        })
+        .then(function (tgt) {
+          if (!tgt) {
+            /* 没得转。**只有「这次新建的」才吭声** ——
+               你自己那张表本来就归你，凭空冒一句「没转成」只会让你以为坏了。 */
+            if (!b.fresh) return null;
+            rec("把这张表转成你的", false,
+              "还认不出你是谁：在「" + PEOPLE_TABLE_NAME + "」里给自己那行选上「成员」、" +
+              "身份标「本人」；或者在「我的飞书邮箱」里填一下你的邮箱 —— 然后**再点一次这个按钮**",
+              true);
+            return null;
+          }
+          return Feishu.transferOwner(cfg, b.appToken, tgt.mt, tgt.mid).then(function () {
+            out.ownerDone = true;
+            out.ownerWhy = "";
+            rec("这张表现在归你了", true, tgt.src === "邮箱" ? "" : "从组员表认出了你", true);
+          }, function (e) {
+            /* ★ 403 / 1063002 = 「调用身份不是这张表的所有者」。
+               常见成因有两个，都**不是故障**：① 这张表本来就是你自己建的；
+               ② 上次已经转成功了（转完应用就不再是所有者）。所以静默跳过。
+               ★ 只有其它原因（网络 / 参数）才记下来，而且仍然是可选步骤 ——
+               归属没转不影响任何功能，扩展读写本来就不依赖它。 */
+            var code = e && e.code;
+            var msg = (e && e.message) || "未知原因";
+            var notOwner = (code === 1063002) || /permission denied|不是.*所有者|所有者/i.test(msg);
+            if (notOwner && !b.fresh) return null;
+            out.ownerWhy = msg;
+            rec("把这张表转成你的", false, msg, true);
           });
         });
     }).then(function () {
@@ -721,7 +862,7 @@
   var api = {
     CFK: CFK, ITK: ITK, PEND: PEND,
     TF: TF, TEAM_SCHEMA: TEAM_SCHEMA,
-    PTF: PTF, PEOPLE_SCHEMA: PEOPLE_SCHEMA, ROLE_ME: ROLE_ME,
+    PTF: PTF, PEOPLE_SCHEMA: PEOPLE_SCHEMA, ROLE_ME: ROLE_ME, ROLE_MEMBER: ROLE_MEMBER,
     TASK_TABLE_NAME: TASK_TABLE_NAME, PEOPLE_TABLE_NAME: PEOPLE_TABLE_NAME,
     WINDOW_H: WINDOW_H, WINDOW_MAX: WINDOW_MAX,
     store: defaultStore,
@@ -730,6 +871,7 @@
     withCred: withCred,
     derived: derived,
     sameName: sameName,
+    userOf: userOf,
     peopleOf: peopleOf,
     fromPeopleFields: fromPeopleFields,
     fromPeopleRecords: fromPeopleRecords,

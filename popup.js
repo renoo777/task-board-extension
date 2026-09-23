@@ -938,8 +938,18 @@
   function loadInbox(){
     if (typeof Inbox === "undefined") return Promise.resolve();
     return Promise.all([Store.get(Inbox.CFK), Store.get(Inbox.ITK)]).then(function (r) {
-      inboxCfg = Inbox.readCfg(r[0] && r[0][Inbox.CFK]);
-      inboxItems = (r[1] && Array.isArray(r[1][Inbox.ITK])) ? r[1][Inbox.ITK] : [];
+      /* ★★★ v0.34.0 修：`Store.get(key)` 的返回值**就是那个 key 对应的值**
+         （它内部已经 `return o[key]` 了），所以**不能再按 key 索引一次** ——
+         `r[0][Inbox.CFK]` 恒为 undefined，`readCfg(undefined)` 拿到的是**全默认值**，
+         于是「团队派发开着」这件事在弹窗里**永远读不到**：
+           · 抽屉里那个「派给团队成员」永远灰着（哪怕设置页开得好好的）；
+           · 底栏「派给我 N」永远是 0（哪怕表里真的有派给你的任务）。
+         而它零症状 —— 看起来完全像「还没配好」，没有人会怀疑是读取写错了。
+         ★ 同一个错在 manage.js 里也有两处（v0.33.0 修的：`Inbox.readCfg(o && o[IKKEY])`），
+           这两处是那次漏网的 —— 因为当时只查了「写配置」那条链路，
+           popup 这条读链路没在排查范围里。 */
+      inboxCfg = Inbox.readCfg(r[0]);
+      inboxItems = Array.isArray(r[1]) ? r[1] : [];
       renderInbox();
     });
   }
@@ -1067,35 +1077,71 @@
     return Inbox.peopleOf(inboxCfg).filter(function (n) { return n !== me; });
   }
 
+  /* ---------- 抽屉里的「派给团队成员」（v0.34.0 重写）----------
+     ★★★ 这一整块在 v0.32.0 是**死的**，而且是三重死：
+       ① popup.html 里根本没有 id="dAssign" 这个元素 → `if (!btn) return;` 静默退出；
+       ② runDispatch **只有定义、没有任何调用点**（全项目就那一处 function 声明）；
+       ③ t.assign 从来没有被写入过（dApply 不写、dFlush 不写）。
+       于是「把任务派出去」这条链路在真机上一步都没走通过 —— 而单测全绿，
+       因为单测里也没有一条断言碰过它（命中的全是 JS 内置的 Object.assign）。
+       这一版按老大拍板的样子重做：**先选中，再选人**。
+     ★ 置灰规则（老大原话「默认置灰无法选中，开启团队派发之后，可选」）：
+       团队派发没开 → 复选框 disabled，但**这一行还在**。
+       灰着比藏着好 —— 藏起来只会让人以为功能不存在（老大正是这么以为的）。
+     ★ 名单为空时下拉自己 disabled：没得选的时候点开一个空面板，
+       按本项目的界面约束**一个字都不会显示**，用户只会觉得点坏了。 */
   function buildDAssign(){
+    var wrap = document.getElementById("dAssignWrap");
+    var onBox = document.getElementById("dAssignOn");
     var btn = document.getElementById("dAssign");
-    if (!btn) return;
+    if (!wrap || !onBox || !btn) return;
+
+    var enabled = !!(inboxCfg && inboxCfg.on);
     var names = assignNames();
-    if (!names.length) { btn.hidden = true; return; }
-    btn.hidden = false;
     var t = dTask();
     var cur = (t && t.assign && t.assign.to) || "";
     /* 任务已经派给过某人、而那人不在名单里（名单改过）→ 补一项，
        否则会静默显示成名单第一个人，下次一存就把接收人改掉了。 */
     if (cur && names.indexOf(cur) < 0) names.push(cur);
     dAssignTo = cur;
+
+    /* ★ 灰要灰在**整行**上（label 挂 .off）：input 自己的默认灰太轻，
+       一眼看不出「这个还不能用」。 */
+    onBox.disabled = !enabled;
+    wrap.classList.toggle("off", !enabled);
+    /* ★ 没启用时强制不勾 —— 留着上次的勾会让人以为这条已经派出去了，
+       而它其实一条都没发。 */
+    onBox.checked = enabled && !!cur;
+    btn.hidden = !onBox.checked;
+    btn.disabled = !names.length;
     paintDAssign();
-    /* ★ onclick 赋值：抽屉每次打开都重建，累加监听器会让选一次触发 N 次。 */
+
+    function pick(v){ dAssignTo = v; paintDAssign(); dTouch(); }
+    /* ★ onclick / onchange 用**赋值**（不是 addEventListener）：抽屉每次打开
+       都会重建这几个控件，累加监听器会让选一次触发 N 次。 */
+    onBox.onchange = function(){
+      if (!onBox.checked) dAssignTo = "";
+      btn.hidden = !onBox.checked;
+      paintDAssign();
+      dTouch();
+      /* 勾上就顺手把下拉弹开：老大要走的是「选中 → 选人」两步，
+         不弹的话勾完还得自己去找那个按钮。 */
+      if (onBox.checked && names.length) toggleSelPop(btn, names, dAssignTo, pick);
+    };
     btn.onclick = function () {
-      var opts = ["不派发"].concat(names);
-      toggleSelPop(btn, opts, dAssignTo || "不派发", function (v) {
-        dAssignTo = (v === "不派发") ? "" : v;
-        paintDAssign();
-        dTouch();
-      });
+      if (btn.disabled) return;
+      toggleSelPop(btn, names, dAssignTo, pick);
     };
   }
 
+  /* ★ 只写 .seltxt，不走 setSelValue —— 后者空值会写成「未分类」，
+     而这儿空值的意思是「还没选人」。 */
   function paintDAssign(){
     var btn = document.getElementById("dAssign");
     if (!btn) return;
-    if (!dAssignTo) { setSelValue(btn, "派发给…"); return; }
-    setSelValue(btn, "派给 " + dAssignTo);
+    var tx = btn.querySelector(".seltxt");
+    if (tx) tx.textContent = dAssignTo || "选谁";
+    btn.classList.toggle("selon", !!dAssignTo);
   }
 
   /* 派发动作。★ 不阻塞保存（fire and forget）：派发要走网络，
@@ -1992,6 +2038,10 @@
     var t = dTask();
     if (!t) { el.textContent = ""; return; }
     var parts = [];
+    /* ★ v0.34.0：派出去的活要**看得见**。它在角标上是被排除的（那是刻意的，
+       交出去的活不占「我还有几件没干」），所以抽屉里必须有个地方说清它去哪了 ——
+       否则这条任务在本地看起来跟没派过一模一样，你会一遍遍地重新处理它。 */
+    if (t.assign && t.assign.to) parts.push("已派给 " + t.assign.to);
     if (t.createdAt) parts.push("建于 " + fmtDay(t.createdAt));
     if (t.doneAt)    parts.push("完成于 " + fmtDay(t.doneAt));
     if (t.archived)  parts.push("已归档");
@@ -2090,6 +2140,35 @@
     if (dv && dv !== (t.date || "")) { t.date = dv; ch = true; }
     if (dProj && dProj !== t.project) { t.project = dProj; ch = true; }
     if (dPri !== normPriority(t.priority)) { t.priority = dPri; ch = true; }
+
+    /* ---------- 派给团队成员（v0.34.0）----------
+       ★★★ v0.32.0 缺的就是这一段：dApply 从来没写过 t.assign，
+         于是「派发」在本地连痕迹都留不下、runDispatch 也就没人调 ——
+         整条链路在真机上一步都没走通过，而单测全绿。
+       ★ 只在**目标变了**的时候发一次：dApply 在每次收起抽屉、以及编辑中
+         每 320ms 的自动保存时都会被调用，不比较的话会反复往团队表里写同一条任务
+         （接收人那边收到一串一模一样的重复）。
+       ★ 改派（A → B）在这里是「再写一条」，旧的那条留在表里 —— A 仍然看得见它。
+         这是**刻意**的：我们手上没有旧记录的 recordId，而为了改派去读一遍全表、
+         再删掉一条别人正在看的记录，代价和风险都不成比例。
+       ★ 取消勾选同理：只摘掉本地的 assign，不去删团队表里那条 ——
+         对方看到的那条仍然是「他确实被派过」的事实。
+       ★★ 拿不到那个复选框时**什么都不做**（而不是当成「没勾」）：
+         当成没勾的话，这个元素哪天出点问题，保存一次就会静默把所有派发标记抹掉。 */
+    var onBox = document.getElementById("dAssignOn");
+    if (onBox) {
+      var wantTo = onBox.checked ? dAssignTo : "";
+      var curTo = (t.assign && t.assign.to) || "";
+      if (wantTo !== curTo) {
+        if (wantTo) {
+          t.assign = { to: wantTo, at: Date.now() };
+          runDispatch(t, wantTo);    /* fire and forget，理由见 runDispatch */
+        } else {
+          delete t.assign;
+        }
+        ch = true;
+      }
+    }
     return ch;
   }
 

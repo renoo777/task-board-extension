@@ -1111,6 +1111,23 @@ html.has-showpicker .drawer .datewrap input[type="date"]::-webkit-calendar-picke
    不固定的话两行控件的左边界会错开一格，看着就像没对齐。 */
 .drawer .dseg2{display:grid;grid-template-columns:38px minmax(0,1fr);gap:8px;align-items:center}
 .drawer .dseg2 .lb{font-size:11px;color:var(--ink3)}
+/* ---------- 抽屉里的「派给团队成员」（v0.34.0） ----------
+   ★★ 为什么这一行**必须常驻可见、灰着**，而不是「没配好就藏起来」：
+      v0.32.0 交付的「派发给其他人」就是藏起来的（而且连元素都没进 HTML），
+      结果老大以为这个功能根本不存在，专门提了一条需求要「增加」它。
+      灰着比藏着好：灰着告诉人「这儿有个东西，只是现在还不能用」。
+   ★ 两个控件分工：左边复选框回答「要不要派」，右边下拉回答「派给谁」。
+   ★ 复选框用**原生** checkbox + accent-color，不搬设置页那套自绘开关 ——
+     那套依赖 --sw-a（只有 manage 页有），搬过来会得到一个没有颜色的轨道。 */
+.drawer .dassign{display:flex;align-items:center;gap:8px;min-width:0}
+.drawer .dassign .selbtn{margin-left:auto;max-width:132px}
+.drawer .selbtn[disabled]{opacity:.45;cursor:not-allowed}
+.sw2{display:inline-flex;align-items:center;gap:6px;font:inherit;font-size:12.5px;
+  color:var(--ink2);cursor:pointer;user-select:none;white-space:nowrap}
+.sw2 input[type=checkbox]{accent-color:var(--s-doing);width:14px;height:14px;margin:0;flex:none;cursor:pointer}
+/* 关着的时候整行后退：光靠 input 的默认灰太轻，一眼看不出「这个不能用」 */
+.sw2.off{opacity:.5;cursor:not-allowed}
+.sw2.off input[type=checkbox]{cursor:not-allowed}
 
 /* 卡片右下角的「展开」按钮（hover 出现），和日历并列。
    它就是编辑抽屉的**看得见的入口** —— 只有键盘快捷键的入口等于没有入口。 */
@@ -1305,6 +1322,25 @@ html[data-theme="dark"] .bar .tsw .tsw-kn{transform:translateX(26px)}
     </div>
     <div class="dseg2"><span class="lb">状态</span><div class="pseg" id="dSeg"></div></div>
     <div class="dseg2"><span class="lb">优先级</span><div class="pseg" id="dPseg"></div></div>
+    <!-- 派给团队成员（v0.34.0）
+         ★★ v0.32.0 交付的「派发给其他人」**在界面上从来没有出现过**：
+            js 那边一直在 getElementById("dAssign")，而这个元素根本不在 HTML 里，
+            `if (!btn) return;` 静默退出 —— 零症状，而且单测里没有一条断言覆盖它
+            （命中的全是 JS 内置的 Object.assign）。老大这次的第二条需求
+            「项目中增加一个：派任务给团队成员」，说的就是这个缺口。
+         ★ 默认置灰（checkbox disabled）：团队派发没开的时候这一行**在**、但点不动。
+            灰着比藏着好 —— 藏起来的话用户会以为功能不存在（老大正是这么以为的）。
+         ★ 勾上之后右边才出现「派给谁」那个下拉；名单从多维表格的「组员」子表来
+            （见 popup.js 的 buildDAssign）。
+         ★ 名字叫「派给团队成员」而不是「派发给…」：它跟下面那个下拉是**一组**，
+            前者是意图、后者是对象，读起来才是一句话。 -->
+    <div class="dseg2"><span class="lb">派发</span>
+      <div class="dassign">
+        <label class="sw2" id="dAssignWrap"><input type="checkbox" id="dAssignOn"><span>派给团队成员</span></label>
+        <button type="button" id="dAssign" class="selbtn" hidden
+                aria-haspopup="listbox" aria-expanded="false"><span class="seltxt"></span><i class="chev"></i></button>
+      </div>
+    </div>
     <div class="dmeta" id="dMeta"></div>
   </div>
   <div class="dfoot">

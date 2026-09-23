@@ -786,6 +786,32 @@ var Feishu = (function () {
       });
   }
 
+  /* 把这张多维表格的**归属**转给某个人（v0.34.0）。
+     ★★★ 为什么非有它不可（老大真机反馈的原话：「我的飞书账号没有编辑跟管理权限，
+       我需要一键创建多维表格，多维表格的归属人是我」）：
+       应用（tenant_access_token）建的云文档**归应用自己**，人在飞书里只是
+       「被邀请的协作者」。上一版靠 setLinkEditable 把链接设成「组织内可编辑」——
+       那确实让人**能改**，但**所有者仍然不是他**：看不到管理入口、改不了权限、
+       也移不走这个文档。要「归属人是我」只有转移所有者这一条路。
+     ★ 谁能调：接口要求**调用身份必须是该文档的所有者** —— 应用正好是，
+       所以这条路不需要用户做任何额外授权、也不需要知道他是谁。
+     ★★ `remove_old_owner` **故意不传**（默认 false）：转移后应用保留
+       `old_owner_perm`（默认 full_access）——不保留的话一转完扩展自己就写不进去了，
+       症状是「归属对了，但派发/回写全失败」，而且看起来像权限没配好。
+     ★ `need_notification=false`：这是他自己点的按钮，不必再收一条系统通知。
+     ★ member_type 支持 email / openid / userid：
+       email 是**唯一不需要先知道 open_id** 的一种（所以「我记得我的邮箱」就够）；
+       openid 则从组员表的人员字段里读（见 inbox.js provision 的最后一步）。 */
+  function transferOwner(cfg, appToken, memberType, memberId) {
+    var mt = String(memberType == null ? "" : memberType).trim() || "email";
+    var mid = String(memberId == null ? "" : memberId).trim();
+    if (!mid) return Promise.reject(err("TRANSFER_OWNER", "没给新的所有者"));
+    if (!appToken) return Promise.reject(err("TRANSFER_OWNER", "没给多维表格的 token"));
+    var url = API + "/drive/v1/permissions/" + encodeURIComponent(appToken) +
+      "/members/transfer_owner?type=bitable&need_notification=false";
+    return call(cfg, "POST", url, { member_type: mt, member_id: mid });
+  }
+
   /* 列出某个 base 下的数据表。用于「粘了链接但链接里没带 table 参数」时自动补全。 */
   function listTables(cfg, appToken) {
     var url = API + "/bitable/v1/apps/" + encodeURIComponent(appToken) + "/tables?page_size=100";
@@ -1024,6 +1050,7 @@ var Feishu = (function () {
     createTable: createTable,
     dropTable: dropTable,
     setLinkEditable: setLinkEditable,
+    transferOwner: transferOwner,
     listTables: listTables,
     listFields: listFields,
     createField: createField,
