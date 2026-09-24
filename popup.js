@@ -816,6 +816,14 @@
 
     var cmp = cmpInCol(st.view === "project" ? byProject : byDate);
 
+    /* ★ v0.36.0：「按项目」视图里插**项目分组行**，并在待办列那一行右侧放派发入口。
+       为什么：老大开了团队派发却在界面上找不到「派发给其他人」——
+       原来那个入口只藏在任务抽屉里，而且要先勾「派给团队成员」才出现；
+       「按项目」视图里一个都没有。拍板就是把入口放到项目那一行上。
+       ★ 已完成列**不分组**：它按完成时间倒序（刚完成的最上），
+         分组会把这条最有用的顺序打碎；已完成的东西也不需要再派人。 */
+    var grouped = (st.view === "project");
+
     STATUSES.forEach(function(s){
       // 已完成列按完成时间倒序：刚完成的排最上面
       buckets[s].sort(s === "done" ? byDoneDesc : cmp);
@@ -824,7 +832,8 @@
       body.dataset.empty = emptyText(s);
       body.innerHTML = "";
       // 把列内位置传进去：优先级亮度里「没设档就看位置」那一条依赖它
-      buckets[s].forEach(function(t, i){ body.appendChild(cardEl(t, false, i)); });
+      if (grouped && s !== "done") appendGrouped(body, buckets[s], s);
+      else buckets[s].forEach(function(t, i){ body.appendChild(cardEl(t, false, i)); });
 
       var cntEl = document.querySelector('.col[data-status="'+s+'"] .count');
       cntEl.textContent = buckets[s].length;
@@ -930,6 +939,9 @@
   var inboxTimer = null;
   /* 抽屉里「派发给」当前选中的人。空串 = 不派给任何人。 */
   var dAssignTo = "";
+  /* 项目行派发的重入闸门（v0.36.0）：点一下要先去拉组员表，
+     拉的过程中再点一下会开出两个选人面板 —— 同一个按钮上只允许一个在跑。 */
+  var projBusy = false;
 
   function inboxLive(){
     return (inboxItems || []).filter(function (x) { return x && x.status !== "done"; });
@@ -951,6 +963,17 @@
       inboxCfg = Inbox.readCfg(r[0]);
       inboxItems = Array.isArray(r[1]) ? r[1] : [];
       renderInbox();
+      /* ★★★ v0.36.0：配置读完必须**重绘一次看板**。
+         为什么：项目行上那颗派发按钮的存在与否取决于 `inboxCfg.on`，而
+         `inboxCfg` 是**异步**读回来的 —— 首帧那次 render() 跑在它之前，
+         于是按钮永远不出现，直到用户碰巧触发了另一次 render（拖一下、改个日期）。
+         症状和老大报的那句一模一样：「开启了团队派发，但是在项目里面
+         没有看到派发给其他人这个选项」—— 而设置页里那个开关明明开着。
+         ★ 这一条是**写这批测试时被自己的断言抓出来的**：先量到 `.prow .pgo` 为 0，
+           才回头发现是加载顺序，不是 CSS 也不是 on 判断。
+         ★ 只在「按项目」视图下重绘：别的视图里 `.prow` 根本不存在，
+           这次 render() 是纯浪费（而且它会重建整列 DOM，会打断正在进行的拖拽）。 */
+      if (st.view === "project") render();
     });
   }
 
@@ -1163,6 +1186,143 @@
     });
   }
 
+  /* ---------- 「按项目」视图：项目分组行 + 派发入口（v0.36.0）----------
+     每换一个项目就插一行 .prow：色点 + 项目名（+ 待办列上一颗派发按钮）。
+     ★ 卡片仍由 cardEl 生成，`i` 仍然是**它在整列里的序号** ——
+       优先级亮度「没设档就看位置」那条依赖它，分组不许把它重排。
+     ★ 分组行不是 .card，所以全局那套「点卡片开始拖拽」的 pointerdown 兜底
+       （`e.target.closest(".card")`）会直接放行，不会误判成拖动。
+     ★ 拖拽只改「列归属」、不按节点序号插入（见 activateDrag / pointerup），
+       所以往列里塞非 .card 的节点不会打乱落点判定。 */
+  function appendGrouped(body, list, status){
+    var last = null, seen = false;
+    list.forEach(function(t, i){
+      if (!seen || t.project !== last) {
+        body.appendChild(projRow(t.project, status));
+        last = t.project; seen = true;
+      }
+      body.appendChild(cardEl(t, false, i));
+    });
+  }
+
+  function projRow(proj, status){
+    var r = document.createElement("div");
+    r.className = "prow";
+    r.dataset.project = proj;
+
+    var dot = document.createElement("i");
+    dot.className = "pdot";
+    dot.style.background = projColor(proj);
+    var nm = document.createElement("span");
+    nm.className = "pname";
+    nm.textContent = proj;
+    r.appendChild(dot);
+    r.appendChild(nm);
+
+    /* ★ 按钮**只在待办列**出现：派发的对象是「待办的活」。
+       三列各放一颗同样的按钮，点哪颗效果都一样，只会让人犹豫。
+       ★ 只在团队派发**开着**时出现（不是灰着）：项目行是每屏都要看的区域，
+         常驻一颗永远点不动的按钮属于噪声；而「开了就该看见」这个诉求
+         由 teamOn 保证 —— 老大这次报的就是开了却看不见。 */
+    if (status === "todo" && inboxCfg && inboxCfg.on) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "pgo";
+      b.title = "把「" + proj + "」派给团队成员";
+      b.setAttribute("aria-label", "派发");
+      b.appendChild(sendIcon());
+      /* ★ mousedown 必须拦掉：不拦的话按下时焦点会跑到按钮上，
+         正在就地编辑的那张卡会「失焦提交」—— 和 .dexp / .selopt 是同一个坑。 */
+      b.addEventListener("mousedown", function(e){ e.preventDefault(); });
+      b.addEventListener("click", function(){ openProjDispatch(proj, b); });
+      r.appendChild(b);
+    }
+    return r;
+  }
+
+  /* 现拉一次组员表，把名单并进内存里的配置。
+     ★ 为什么要「点的时候才拉」：名单的唯一事实源是组员表，本地 cfg.people 只是缓存。
+       实测老大那边 peopleAt=0（一次都没拉过）⇒ 缓存是空的 ⇒ 入口做出来下拉也是空的。
+       点一下就现拉，比等他去设置页按「现在拉一次」靠谱得多。
+     ★ **永不 reject**：调用方只关心「现在手上有没有名单」。拉不到就用旧的 ——
+       一次网络抖动不该让整个入口点不动（跟 fromPeopleRecords 那条同一个理由）。 */
+  function refreshPeople(){
+    if (typeof Inbox === "undefined" || typeof Sync === "undefined") return Promise.resolve();
+    return Sync.readCfg().then(function(sc){
+      var full = Inbox.withCred(inboxCfg, sc);
+      if (!Inbox.ready(full) || !full.peopleTableId) return null;
+      return Inbox.listPeople(full).then(function(got){
+        inboxCfg = Inbox.applyPeople(inboxCfg, got);
+        return Inbox.saveCfg(inboxCfg);
+      });
+    }).catch(function(){ return null; });
+  }
+
+  /* 点项目行上的派发按钮。两步：先拉名单，再弹选人。 */
+  function openProjDispatch(proj, anchor){
+    if (typeof Inbox === "undefined" || projBusy) return;
+    projBusy = true;
+    refreshPeople().then(function(){
+      projBusy = false;
+      var names = assignNames();
+      /* ★ 名单为空时**不禁用按钮**，而是给一句能照做的话。
+         v0.34.0 那条「灰着比藏着好」在这里不适用：抽屉里的开关是个**状态**，
+         灰着看得见状态；而项目行上的按钮是个**动作**，灰着按不动又不说为什么，
+         人只会觉得点坏了。toast 是动作反馈，不是界面上的解释文字。 */
+      if (!names.length) {
+        toast("组员表里还没有人：去飞书打开「组员」表添几行（姓名 + 成员 + 身份）");
+        return;
+      }
+      /* 派发要写「我是谁」那一列（团队表里谁是派发人），所以先得有「我」。
+         它是组员表里标「本人」那行 —— 没标的话这一步必然失败，
+         与其让飞书报个看不懂的错，不如在这儿说清楚。 */
+      if (!(inboxCfg && inboxCfg.me)) {
+        toast("先认一下你是谁：在「组员」表里给自己那行把身份选成「本人」");
+        return;
+      }
+      toggleSelPop(anchor, names, "", function(who){ runProjDispatch(proj, who); });
+    });
+  }
+
+  /* 项目行上的派发 = 把该项目**所有未完成**的任务派给这个人
+     （老大拍板的默认语义，他否决就改）。抽屉里那个是**单条**派发，两条路并存。
+     ★ 串行、不并发：飞书对同一张表的并发写会回 1254608，
+       而这里一按就是好几条。串行慢一点，但每条的结果都能单独交代。
+     ★ 一条失败**不中断**：剩下的继续派，最后把成败一起说 —— 半路停下的话
+       用户不知道剩下的到底派出去了没有。 */
+  function runProjDispatch(proj, who){
+    var mine = st.tasks.filter(function(t){
+      return t.project === proj && t.status !== "done" && t.status !== HOLD && !isArchived(t);
+    });
+    if (!mine.length) return;
+    Sync.readCfg().then(function(sc){
+      var full = Inbox.withCred(inboxCfg, sc);
+      if (!Inbox.ready(full)) {
+        toast("派发没配好：去设置页检查一下团队表");
+        return;
+      }
+      var ok = 0, bad = 0, i = 0;
+      function step(){
+        if (i >= mine.length) return Promise.resolve();
+        var t = mine[i++];
+        return Inbox.dispatch(full, t, who).then(function(){
+          /* 本地也记一笔：否则抽屉再打开时「派给」那格还是空的，
+             人会以为没派出去，然后再派一次（于是飞书表里出现两条）。 */
+          t.assign = { to: who, at: Date.now() };
+          ok++;
+          return step();
+        }, function(){ bad++; return step(); });
+      }
+      return step().then(function(){ return save(); }).then(function(){
+        render();
+        toast(bad ? ("派了 " + ok + " 条，" + bad + " 条没派出去")
+                  : ("把「" + proj + "」的 " + ok + " 条派给 " + who + " 了"));
+      });
+    }).catch(function(e){
+      toast("派失败：" + ((e && e.message) || "未知原因"));
+    });
+  }
+
   function emptyText(s){
     if (searching) return "没有命中的";
     if (st.tasks.length === 0 && s === "todo") return "在上面输入框记第一笔";
@@ -1322,6 +1482,30 @@
     var p = document.createElementNS(NS, "path");
     p.setAttribute("d", "M8.4 2h3.6v3.6M11.6 2.4L7.9 6.1M5.6 12H2V8.4M2.4 11.6L6.1 7.9");
     svg.appendChild(p);
+    return svg;
+  }
+
+  /* 派发图标（v0.36.0）：一个朝右的箭头从方框里射出去 —— 「把这条交出去」。
+     ★ 为什么用图标而不是「派发」两个字：项目分组行只有一行高，
+       写上两个字会把项目名挤成省略号，而项目名是那一行的主角。
+     ★ 同上一条：SVG 不用字符（「⇥」之类的码位在中文字体里同样缺字，会变豆腐块）。 */
+  function sendIcon(){
+    var NS = "http://www.w3.org/2000/svg";
+    var svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 14 14");
+    svg.setAttribute("width", "11");
+    svg.setAttribute("height", "11");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.4");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    var box = document.createElementNS(NS, "path");
+    box.setAttribute("d", "M6.2 2.2H3.1a1.4 1.4 0 0 0-1.4 1.4v6.9a1.4 1.4 0 0 0 1.4 1.4h6.9a1.4 1.4 0 0 0 1.4-1.4V7.4");
+    var arrow = document.createElementNS(NS, "path");
+    arrow.setAttribute("d", "M8.6 1.9h3.5v3.5M12.1 1.9 7.2 6.8");
+    svg.appendChild(box);
+    svg.appendChild(arrow);
     return svg;
   }
 
@@ -3123,6 +3307,15 @@
       /* 设置页改了使用偏好要**立刻**生效 —— 「数据」按钮就在顶栏上，
          一边开着弹窗一边改设置是很常见的一条路径。 */
       if (changes[PREFKEY]) { prefs = readPrefs(changes[PREFKEY].newValue); renderNlpBar(); }
+
+      /* ★ v0.36.0：设置页里「团队派发」那个开关一动，项目行上那颗派发按钮
+         要**当场**跟着出现/消失。不接这条的话，用户开着弹窗去设置页打开开关、
+         回来看板还是「看不到派发选项」—— 又绕回老大报的那个现象。 */
+      if (typeof Inbox !== "undefined" && changes[Inbox.CFK]) {
+        inboxCfg = Inbox.readCfg(changes[Inbox.CFK].newValue);
+        renderInbox();
+        if (st.view === "project") render();
+      }
     });
   }
 

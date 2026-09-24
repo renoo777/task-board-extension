@@ -821,6 +821,74 @@ var Feishu = (function () {
     return call(cfg, "POST", url, { member_type: mt, member_id: mid });
   }
 
+  /* ---------- 认人（v0.36.0）----------
+     这两条是「转移归属」的前置：先得知道**本人是谁**。
+     v0.34.0 只留了「设置页填邮箱」「组员表标本人」两条路，两条都空时整步静默跳过 ——
+     老大看到的现象就是原话那句「新建的表格权限还是没有我」。 */
+
+  /* 本应用在开放平台登记的**所有者**，也就是申请这个自建应用的那个账号。
+     ★★★ 实测证据（2026-09-24 真机探针，token 取自扩展自己的缓存）：
+       · `GET /application/v6/applications/me?lang=zh_cn` → HTTP 200 / code=0；
+       · 返回 `data.app.owner.owner_id` = `ou_12899cc7…209d`；
+       · 同一时刻 `POST /drive/v1/metas/batch_query` 读这张表的 `owner_id`
+         是**同一个串**，而且 `latest_modify_user` 也是它。
+       ⇒ 这个 open_id 与文档域里的身份**完全一致**，可以**直接**拿去 transfer_owner。
+          （上一版我怀疑「登记所有者 ≠ 文档域身份」，那是因为拿手建的另一张表去比 ——
+           两张表的 open_id 本来就属于不同的应用作用域。铁律 523 记着这次误判。）
+     ★ 为什么用 `me` 而不是传 cfg.appId：官方文档写明「仅查询本应用信息时，
+       可填入 "me" 或者应用自身 app_id」。用 me 就**不依赖 appId 填没填** ——
+       团队派发的 appId 往往来自「飞书同步」那边（见 inbox.withCred），
+       而这条链路在设置页上看起来跟同步毫无关系，没填时不该断。
+     ★ 为什么不读 `owner.type`：owner 里确实有个 `type`（实测 = 2），但那一页响应表是
+       折叠的、枚举语义没拿到确凿对照 —— **不猜**。member_type 一律按 id 前缀判
+       （见 memberTypeOf）：前缀是飞书自己写在文档里的硬规则。
+     ★ 只回 id：实测 `name` / `email` 都是空串，别指望顺手拿到姓名。
+       要姓名就拿这个 id 去组员表里对（那是老大自己填的那一份）。 */
+  function appOwner(cfg) {
+    var url = API + "/application/v6/applications/me?lang=zh_cn";
+    return call(cfg, "GET", url, null).then(function (d) {
+      var app = (d && (d.app || d)) || {};
+      var ow = app.owner || {};
+      return {
+        id: String(ow.owner_id == null ? "" : ow.owner_id).trim(),
+        name: String(ow.name == null ? "" : ow.name).trim()
+      };
+    });
+  }
+
+  /* 回读某个云文档**当前**的所有者。用途只有一个：转移之后**验证真转给了谁**。
+     ★★★ 为什么非要回读：v0.34.0 只信 `transfer_owner` 的返回值（code=0 就当成功），
+       而「接口返回成功」与「所有者真的变成了那个人」是两件事 ——
+       老大这次就栽在这上面：我看着 code=0 报了成功，其实转给了一个当时无法从界面确认的身份。
+     ★ 与 metaUrl 的区别（同一个端点，**故意分开**）：metaUrl 是「顺手取个链接」，
+       失败就回 null；这里失败**必须往上抛** —— 验证器如果读不到就说不出
+       「转成了」和「读不到」的区别，那它就成了假牙。
+     ★ 实测字段路径：`data.metas[0].owner_id`（同一条还有 `latest_modify_user`）。 */
+  function docOwner(cfg, appToken) {
+    if (!appToken) return Promise.reject(err("DOC_OWNER", "没给多维表格的 token"));
+    var body = { request_docs: [{ doc_token: appToken, doc_type: "bitable" }], with_url: false };
+    return call(cfg, "POST", API + "/drive/v1/metas/batch_query", body).then(function (d) {
+      var m = (((d && d.metas) || [])[0]) || {};
+      return {
+        id: String(m.owner_id == null ? "" : m.owner_id).trim(),
+        title: String(m.title == null ? "" : m.title).trim()
+      };
+    });
+  }
+
+  /* 飞书 id 前缀 → transfer_owner 的 member_type。
+     ★ 规则来自飞书文档：open_id 以 `ou_` 开头，union_id 以 `on_` 开头；
+       其余（租户内工号那种自定 user_id）按 userid 传。
+     ★ 为什么要这个函数：成员 id 可能从三个不同来源进来（邮箱那条不走它、
+       组员表给的是 open_id、应用所有者给的也是 open_id），传错 member_type 的
+       症状是飞书回一句「成员不存在」——而 id 明明是对的，人会往权限上想。 */
+  function memberTypeOf(id) {
+    var s = String(id == null ? "" : id).trim();
+    if (/^ou_/.test(s)) return "openid";
+    if (/^on_/.test(s)) return "unionid";
+    return "userid";
+  }
+
   /* 列出某个 base 下的数据表。用于「粘了链接但链接里没带 table 参数」时自动补全。 */
   function listTables(cfg, appToken) {
     var url = API + "/bitable/v1/apps/" + encodeURIComponent(appToken) + "/tables?page_size=100";
@@ -1060,6 +1128,9 @@ var Feishu = (function () {
     dropTable: dropTable,
     setLinkEditable: setLinkEditable,
     transferOwner: transferOwner,
+    appOwner: appOwner,
+    docOwner: docOwner,
+    memberTypeOf: memberTypeOf,
     listTables: listTables,
     listFields: listFields,
     createField: createField,

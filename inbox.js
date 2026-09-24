@@ -728,6 +728,64 @@
       out.created = !!b.fresh;
       if (!b.fresh) rec("用你填的那个多维表格", true, b.appToken);
 
+      /* ---------- 认人（v0.36.0）----------
+         三级兜底，**顺序即优先级**：明确指认 > 老大自己填的表 > 推断。
+         ★ 为什么第三级可以「零配置」：应用是自建应用，登记时必然绑了所有者，
+           而那个人就是老大的账号 —— 实测它与文档域身份是同一个 open_id
+           （证据见 feishu.js appOwner 那段）。所以不填任何东西也能认出人。 */
+      function ownerTarget(appToken) {
+        var mail = trim(cfg && cfg.ownerMail);
+        if (mail) return Promise.resolve({ mt: "email", mid: mail, src: "邮箱" });
+        var fromPeople = out.peopleTableId
+          ? Feishu.listAll(derived(cfg, appToken, out.peopleTableId)).then(function (recs) {
+              var meId = fromPeopleRecords(recs).meId;
+              /* ★ member_type 按 id 前缀判，不写死 "openid"：老大在组员表里
+                 填的可能是裸 user_id，写死的话飞书会回「成员不存在」，
+                 而 id 明明是对的 —— 人会往权限上想。 */
+              return meId ? { mt: Feishu.memberTypeOf(meId), mid: meId, src: "组员表" } : null;
+            }, function () { return null; })
+          : Promise.resolve(null);
+        return fromPeople.then(function (t) {
+          if (t) return t;
+          /* 第三级。**失败不抛出** —— 认不出人是这条链路本来就允许的结果
+             （三处都没配 / 应用查不到自己），不该让整步炸掉。
+             ★ 也**不看 b.fresh**：认人这件事跟你填没填 baseToken 无关。 */
+          return Feishu.appOwner(cfg).then(function (ow) {
+            return (ow && ow.id)
+              ? { mt: Feishu.memberTypeOf(ow.id), mid: ow.id, src: "应用" }
+              : null;
+          }, function () { return null; });
+        });
+      }
+
+      /* 转移之后**回读**表上的所有者，确认真的转成了这个人。
+         ★★★ 为什么非回读不可：「接口返回 code=0」与「所有者真变成了他」是两件事。
+           v0.34.0 只信返回值就报了成功，老大这次正好撞上（铁律 523 记的误判）。
+         ★ 为什么 id 来源才比对、邮箱来源不比对：回读拿到的**永远是 id**，
+           邮箱那把是邮箱 —— 两者不可能相等，硬比会把每一次成功都报成失败。
+           要拿邮箱换 id 得走通讯录接口，而实测这个应用对通讯录没有权限。
+           所以邮箱那条只验「读到了、而且不是应用自己」。
+         ★ 回读失败**不当失败**：它只说明「验不了」，把原因带出去让设置页照实说。 */
+      function verifyOwner(appToken, tgt) {
+        return Feishu.docOwner(cfg, appToken).then(function (own) {
+          var got = trim(own && own.id);
+          var want = trim(tgt && tgt.mid);
+          /* 应用自己的 id 是 cli_… —— 回读到它 = 归属**根本没转出去**，真失败。 */
+          var isApp = /^cli_/.test(got);
+          if (tgt && tgt.mt === "email") return { ok: !!got && !isApp, got: got };
+          return { ok: !!got && !!want && got === want, got: got };
+        }, function (e) {
+          return { ok: false, got: "", why: (e && e.message) || "读不出来" };
+        });
+      }
+
+      /* 所有者 id 是 34 位的串（`ou_` + 32 hex），原样打进设置页会把那一行撑开、
+         把真正的信息（到底转给谁了）挤没。缩成 前 8 + 后 4。 */
+      function shortId(v) {
+        var s = trim(v);
+        return s.length > 14 ? (s.slice(0, 8) + "\u2026" + s.slice(-4)) : s;
+      }
+
       return ensureTable(cfg, b.appToken, cfg.tableId, TASK_TABLE_NAME, TEAM_SCHEMA)
         .then(function (r) {
           out.tableId = r.tableId;
@@ -773,29 +831,29 @@
                但所有者仍然不是你（看不到管理入口、改不了权限、移不走它）。
              ★ 为什么放在整条链路**最后**：前面任何一步挂了都不该动归属 ——
                一张列都没补全的表先转出去，出问题时应用就不好收拾了。
-             ★ 两个来源，谁先有就用谁：
+             ★★★ v0.36.0 认人升成**三级零配置兜底**（实现见 ownerTarget）：
                a) 配置里的「我的飞书邮箱」—— 建表那一刻就有，一次到位；
-               b) 组员表里标「本人」那行的人员字段 open_id —— 首次生成时表是空的，
-                  只能等他填完再点一次（幂等，可以反复点）。
+               b) 组员表里标「本人」那行的人员字段 —— 首次生成时表是空的，
+                  只能等他填完再点一次（幂等，可以反复点）；
+               c) 应用在开放平台登记的**所有者** —— 零配置，不用填任何东西。
+             ★ 为什么 c 排在最后：它最省事，但语义上离「本人」最远
+               （登记所有者理论上可以和日常账号不是一个人）。前两级是**明确指认**，
+               能指认就轮不到推断。
              ★★ 为什么**不看 b.fresh**、每次都试着转：
                你这个 Base 可能是应用以前建的（那应用就是所有者，该转），
                也可能是你自己在飞书里建的（那本来就是你的，不该转）——
                这两种情况下 baseToken 都已填、fresh 都是 false，**从 fresh 分不出来**。
-               而多试一次的代价只是一个请求：不是所有者时飞书回 403，
-               我们把它当「本来就归你」静默跳过（见下面那段）。 */
-          var mail = trim(cfg && cfg.ownerMail);
-          if (mail) return { mt: "email", mid: mail, src: "邮箱" };
-          if (!out.peopleTableId) return null;
-          return Feishu.listAll(derived(cfg, b.appToken, out.peopleTableId)).then(function (recs) {
-            var meId = fromPeopleRecords(recs).meId;
-            return meId ? { mt: "openid", mid: meId, src: "组员表" } : null;
-          }, function () { return null; });
+               而多试一次的代价只是一个请求：不是所有者时飞书回 1063002，
+               我们回读一次真实所有者（见下），而不是瞎猜。 */
+          return ownerTarget(b.appToken);
         })
         .then(function (tgt) {
           if (!tgt) {
-            /* 没得转。**只有「这次新建的」才吭声** ——
-               你自己那张表本来就归你，凭空冒一句「没转成」只会让你以为坏了。 */
-            if (!b.fresh) return null;
+            /* 认不出人。**v0.36.0 起不再只在「这次新建的」才吭声** ——
+               复用你那张表时这一步原来是静默跳过，症状就是老大那句
+               「新建的表格权限还是没有我」，而他根本不知道去哪儿找原因。
+               ★ 归属仍是**可选**步骤：没转成不影响任何功能（扩展读写不依赖它），
+                 所以记 optional，不让它把「一键生成」整体染成失败。 */
             rec("把这张表转成你的", false,
               "还认不出你是谁：在「" + PEOPLE_TABLE_NAME + "」里给自己那行选上「成员」、" +
               "身份标「本人」；或者在「我的飞书邮箱」里填一下你的邮箱 —— 然后**再点一次这个按钮**",
@@ -803,21 +861,54 @@
             return null;
           }
           return Feishu.transferOwner(cfg, b.appToken, tgt.mt, tgt.mid).then(function () {
-            out.ownerDone = true;
-            out.ownerWhy = "";
-            rec("这张表现在归你了", true, tgt.src === "邮箱" ? "" : "从组员表认出了你", true);
+            /* ★★★ 转完**必须回读**：「接口回 code=0」只说明这次请求被接受了，
+               不说明所有者真的变成了目标 —— 它们是两件事。 */
+            return verifyOwner(b.appToken, tgt).then(function (v) {
+              if (v.ok) {
+                out.ownerDone = true;
+                out.ownerWhy = "";
+                rec("这张表现在归你了", true,
+                  (tgt.src === "邮箱" ? "" : "从" + tgt.src + "认出了你") +
+                  (v.got ? "（所有者 " + shortId(v.got) + "）" : ""), true);
+                return null;
+              }
+              /* 转出去了，但表上的所有者不是他 —— **真失败**，而且是最难自己发现的
+                 那一种（接口明明回了成功）。把真实所有者报出来，别让人对着「成功」干瞪眼。 */
+              out.ownerDone = false;
+              out.ownerWhy = "转给了 " + shortId(tgt.mid) + "，但表上的所有者是 " +
+                (v.got ? shortId(v.got) : (v.why || "读不出来"));
+              rec("把这张表转成你的", false, out.ownerWhy, true);
+              return null;
+            });
           }, function (e) {
-            /* ★ 403 / 1063002 = 「调用身份不是这张表的所有者」。
-               常见成因有两个，都**不是故障**：① 这张表本来就是你自己建的；
-               ② 上次已经转成功了（转完应用就不再是所有者）。所以静默跳过。
-               ★ 只有其它原因（网络 / 参数）才记下来，而且仍然是可选步骤 ——
-               归属没转不影响任何功能，扩展读写本来就不依赖它。 */
+            /* ★ 1063002 = 「调用身份不是这张表的所有者」。两种成因都**不是故障**：
+               ① 这张表本来就是你自己建的；② 上次已经转成功了（转完应用就不再是所有者）。
+               ★★ v0.36.0 的改法：**回读一次真实所有者**（原来是静默 return null）——
+                 因为「本来就归你」和「其实归了别人」在这个错误码上长得一模一样，
+                 静默跳过等于把后者也一起盖住。回读到的 id 直接写进日志，归谁一目了然；
+                 它仍然记成 **ok 的可选步骤**（归属不影响任何功能）。
+               ★ 只有其它原因（网络 / 参数）才算失败，而且同样是可选步骤。 */
             var code = e && e.code;
             var msg = (e && e.message) || "未知原因";
             var notOwner = (code === 1063002) || /permission denied|不是.*所有者|所有者/i.test(msg);
-            if (notOwner && !b.fresh) return null;
-            out.ownerWhy = msg;
-            rec("把这张表转成你的", false, msg, true);
+            if (!notOwner) {
+              out.ownerWhy = msg;
+              rec("把这张表转成你的", false, msg, true);
+              return null;
+            }
+            return Feishu.docOwner(cfg, b.appToken).then(function (own) {
+              var got = trim(own && own.id);
+              var isMine = !!(tgt && tgt.mid && got && got === trim(tgt.mid));
+              /* 1063002 的意思就是「应用不是这张表的所有者」= 这表已经不在应用名下了。
+                 回读到的 id 直接摆出来：是你就最好，不是你也至少知道该找谁。
+                 ★ 不写「（就是你）」以外的判断 —— 目标是邮箱时两边形态不同、
+                   根本比不了，硬下结论就会把「其实归了你」说成「归了别人」。 */
+              rec("这张表已经不在应用名下了", true,
+                got ? ("所有者 " + shortId(got) + (isMine ? "（就是你）" : ""))
+                    : "读不出所有者",
+                true);
+              return null;
+            }, function () { return null; });
           });
         });
     }).then(function () {
