@@ -23,6 +23,14 @@
   var LIBKEY = "taskboard.mc.customs";
   /* ★ 团队派发配置（v0.32.0）。同样从常量取，理由与 NTKEY 一模一样。 */
   var IKKEY = (typeof Inbox !== "undefined" && Inbox.CFK) ? Inbox.CFK : "taskboard.inbox";
+  /* ★ v0.35.0：团队表**存档**的 key（用过的每一张团队表记一条）。
+     ★ 为什么从 Inbox.LOGK 取、不在这儿写死字面量：key 只该有一处定义
+       （inbox.js）。两处写死的话，改一边、另一边静默读到空 ——
+       而「读到空」的症状恰好就是「存档里什么都没有」，跟「还没用过一次」
+       长得一模一样，没有任何报错。
+     ★ 这个 key 只在设置页读写：后台的 storage 取值清单里**没有**它
+       （跟 LIBKEY 同一个规矩），设置页是唯一的写入方。 */
+  var ARCKEY = (typeof Inbox !== "undefined" && Inbox.LOGK) ? Inbox.LOGK : "taskboard.inbox.log";
   /* ★★★ v0.32.0 事故：下面那个 `tmKeep` 原来**没在这儿声明**，直接在 wireTeam 里
      写了一句 `tmKeep = function (patch) {...}`。本文件是 `"use strict"`，
      **给没声明过的变量赋值会抛 ReferenceError** —— 而赋值点正好在启动那一串
@@ -1843,8 +1851,134 @@ function aiBind(){
       var tryHint = document.getElementById("tmTryHint");
       var nowHint = document.getElementById("tmNowHint");
       var makeHint = document.getElementById("tmMakeHint");
+      var arcEl = document.getElementById("tmArc");
 
       var cfg = Inbox.readCfg(r[7]);
+
+      /* ---------- 团队表存档（v0.35.0）----------
+         ★★ 它回答的是老大那个问题：「如果我已经填了多维表格我不小心删掉了，
+            那我怎么知道我之前填的是哪一张团队的多维表格？」
+            —— 飞书删表不通知任何人，扩展手里的 baseToken 也不会自己变，
+            所以只有在**换过几茬之后还留着一条条记录**，这个问题才答得上来。
+         ★ 存在于**另一个 key**（ARCKEY），不并进 Inbox 配置：
+           它是一份历史（数组、有上限、只增不减），并进配置会让每次
+           读-改-写都多背一段它管不着的数据 —— 自定义形象库也是这么分的。
+         ★ 只在**设置页**写（跟配置同一条规矩）：后台手里是几秒前的快照，
+           让它写会把这期间用户在设置页改的东西一起抹掉。 */
+      var arc = [];
+
+      /* 读存档。★ `Store.get` 的返回值**就是**那一项本身（它内部
+         `return o[key]`），**不能再按 key 索引一次** —— 那正是 v0.33.0
+         那个「改一项、兄弟字段全没」的坑（那次在团队配置上栽过一回）。 */
+      function loadArc(){
+        return Store.get(ARCKEY).then(function(v){
+          arc = Array.isArray(v) ? v.filter(function(x){
+            return x && typeof x === "object" && x.baseToken;
+          }) : [];
+          return arc;
+        });
+      }
+
+      function pad2(n){ return (n < 10 ? "0" : "") + n; }
+      function fmtAt(ms){
+        var d = new Date(Number(ms) || 0);
+        if (isNaN(d.getTime())) return "";
+        return pad2(d.getMonth() + 1) + "/" + pad2(d.getDate()) + " " +
+          pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+      }
+      /* 表 ID 在界面上只露前 10 位（`tbl` + 7 位）：够在人肉比对时认出来，
+         又不至于把整行挤满。它跟飞书里那张表的「数据表 ID」一致。 */
+      function shortId(s){ return String(s || "").slice(0, 10); }
+
+      /* 记一条。★ 按 baseToken 去重（同一张表反复点生成只该占一行），
+         最近的在最前，最多留 20 条 —— 存档是为了「认出是哪张」，
+         不是账本，堆长了只会更难扫。 */
+      function filing(entry){
+        var bt = String((entry && entry.baseToken) || "").trim();
+        if (!bt) return Promise.resolve(arc);
+        return loadArc().then(function(){
+          var old = null;
+          arc.forEach(function(x){ if (x.baseToken === bt) old = x; });
+          var rec = {
+            baseToken: bt,
+            baseUrl: String((entry && entry.baseUrl) || "").trim(),
+            tableId: String((entry && entry.tableId) || "").trim(),
+            peopleTableId: String((entry && entry.peopleTableId) || "").trim(),
+            at: Date.now()
+          };
+          /* 同一张 Base、但表被删又重建 → 保留新的那份 ID；
+             新那份缺的（比如 baseUrl）从旧的补上，别把它冲成空。 */
+          if (old){
+            if (!rec.baseUrl) rec.baseUrl = String(old.baseUrl || "");
+            if (!rec.tableId) rec.tableId = String(old.tableId || "");
+            if (!rec.peopleTableId) rec.peopleTableId = String(old.peopleTableId || "");
+          }
+          var rest = arc.filter(function(x){ return x.baseToken !== bt; });
+          arc = [rec].concat(rest).slice(0, 20);
+          return Store.set(arc, ARCKEY).then(function(){ return arc; });
+        });
+      }
+
+      /* 渲染。★ 空的时候整块 hidden —— 页面上不留一个空列表头。 */
+      function paintArc(){
+        if (!arcEl) return;
+        arcEl.innerHTML = "";
+        if (!arc.length) { arcEl.hidden = true; return; }
+        arcEl.hidden = false;
+        arc.forEach(function(x){
+          var row = document.createElement("div");
+          /* 当前正在用的那条只标视觉（左侧竖条），**不写「当前」二字**。 */
+          row.className = "arow" + (x.baseToken === cfg.baseToken ? " cur" : "");
+          var at = document.createElement("span");
+          at.className = "at";
+          at.textContent = fmtAt(x.at);
+          row.appendChild(at);
+          if (x.baseUrl){
+            var a = document.createElement("a");
+            a.href = x.baseUrl;
+            a.target = "_blank";
+            a.rel = "noreferrer";
+            a.textContent = "打开";
+            row.appendChild(a);
+          }
+          var tk = document.createElement("span");
+          tk.className = "tk";
+          tk.textContent = shortId(x.tableId) || shortId(x.baseToken);
+          row.appendChild(tk);
+          /* 正在用的那条不给「用这张」：点了等于什么都没发生，
+             那种按钮只会让人以为坏了。 */
+          if (x.baseToken !== cfg.baseToken){
+            var use = document.createElement("button");
+            use.type = "button";
+            use.className = "btn sm";
+            use.textContent = "用这张";
+            use.addEventListener("click", function(){
+              tmKeep({ baseToken: x.baseToken, baseUrl: x.baseUrl || "",
+                tableId: x.tableId || "", peopleTableId: x.peopleTableId || "" })
+                .then(function(){
+                  if (linkEl && x.baseUrl) linkEl.value = x.baseUrl;
+                  return filing(x);
+                })
+                .then(paintArc);
+            });
+            row.appendChild(use);
+          }
+          arcEl.appendChild(row);
+        });
+      }
+
+      /* 启动：读存档 → **把「配置里已经在用、但存档里还没有」的那张补录一条**。
+         ★★ 这一步是老大问题的另一半答案：存档是 v0.35.0 才有的，
+            而他手上那张表是**以前**建的 —— 不补录的话，他删掉表之后再打开
+            这一页，存档里空空如也，而他的问题恰恰是「我删掉的是哪张」。
+         ★ 幂等：已经在存档里的不会重复写（filing 按 baseToken 去重）。 */
+      loadArc().then(function(){
+        return filing({ baseToken: cfg.baseToken, baseUrl: cfg.baseUrl,
+          tableId: cfg.tableId, peopleTableId: cfg.peopleTableId });
+      }).then(function(){ paintArc(); }, function(){ paintArc(); });
+      /* ★ 两个分支都渲染：存档读不到/写不进**不该让这一页崩**，也不该留下
+         一个 unhandledrejection（Pass A 那条「设置页加载无报错」会当场抓到）。
+         读不到就退化成「没有存档」—— 那是这一版之前的行为，不是故障。 */
 
       function say(el, s){ if (el) el.textContent = s || ""; }
 
@@ -1883,6 +2017,9 @@ function aiBind(){
         if (linkEl && !linkEl.value) linkEl.value = cfg.baseUrl || "";
         if (mailEl) mailEl.value = cfg.ownerMail;
         if (ntEl) ntEl.checked = cfg.notifyOn === true;
+        /* ★ v0.35.0：存档里那条「当前」标记跟着配置走 ——
+           用「用这张」切了表之后必须重绘，否则竖条还留在旧那行上。 */
+        paintArc();
       }
 
       onBox.addEventListener("change", function(){
@@ -1962,13 +2099,27 @@ function aiBind(){
               peopleTableId: res.peopleTableId
             }).then(function () {
               if (linkEl && res.baseUrl) linkEl.value = res.baseUrl;
+              /* ★ v0.35.0：这一次用过的这张表记进存档（含链接）——
+                 存档就是「我之前填的是哪一张」这条线索唯一的落点。 */
+              return filing({
+                baseToken: res.baseToken,
+                baseUrl: res.baseUrl || cfg.baseUrl,
+                tableId: res.tableId,
+                peopleTableId: res.peopleTableId
+              });
+            }).then(function () {
+              paintArc();
               var bad = (res.steps || []).filter(function (s) { return !s.ok && !s.optional; });
               /* ★ v0.34.0：归属转成了就直说 —— 「这张表归你了」是老大点名要的结果，
                  不能跟「两张子表都好了」混成同一句话（那听起来像是建完了、
                  但归属还挂在一个应用名下）。 */
+              /* ★ v0.35.0：如果认表时发现「原来记的那个数据表已经不在了」，
+                 这句**优先**说 —— 它解释的是「你那张表为什么换了」，
+                 而用户对这件事的知情权比「建好了」更要紧：静默换表 = 数据分家。 */
               say(makeHint, bad.length
                 ? ("有两步没成：" + bad.map(function (s) { return s.name; }).join("、"))
-                : (res.ownerDone ? "两张子表都好了，这张表归你了" : "两张子表都好了"));
+                : (res.note ? res.note
+                  : (res.ownerDone ? "两张子表都好了，这张表归你了" : "两张子表都好了")));
               /* 顺手拉一次组员表：新建的表当然是空的，但**你那个 Base 里可能已经有了** ——
                  有的话这一步就读进来了，不用等满一个轮询周期。 */
               return sendToBg({ type: "inbox-people" });

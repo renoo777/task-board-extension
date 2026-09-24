@@ -273,6 +273,25 @@ body{
 .sub{font-size:11.5px;color:var(--ink4);line-height:1.6}
 .hr{height:1px;background:var(--line2);margin:16px 0}
 
+/* ★ v0.35.0：团队表存档（用过的每一张记一条）。
+   行里只有**数据**（时间 / token 短码）和两个动作（打开 / 用这张），没有说明文字。
+   当前正在用的那条用**左侧竖条**标记 —— 视觉标记，不是「当前」二字：
+   界面上不放状态文字是本项目的硬约束。 */
+.arc{margin-top:12px;display:flex;flex-direction:column;gap:6px}
+.arc .arow{
+  display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--ink3);
+  padding:5px 9px;border-radius:8px;background:var(--field);border:1px solid var(--line2);
+}
+.arc .arow.cur{border-left:2px solid var(--s-doing)}
+.arc .arow .at{flex:0 0 auto;color:var(--ink2);font-variant-numeric:tabular-nums}
+.arc .arow .tk{
+  flex:1 1 auto;min-width:0;color:var(--ink4);overflow:hidden;white-space:nowrap;
+  text-overflow:ellipsis;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+}
+.arc .arow a{flex:0 0 auto;color:var(--s-doing);text-decoration:none}
+.arc .arow a:hover{text-decoration:underline}
+.arc .arow .btn{flex:0 0 auto}
+
 /* ---------- 分步小标题（v0.27.0：飞书页改三段的骨架） ----------
    ★ 为什么给飞书页加「1 / 2 / 3」：这一页本质是**有序的三件事** ——
      先有应用（凭证）→ 再有表（位置）→ 最后才是同步。
@@ -1172,6 +1191,16 @@ body{
             <button class="btn sm" id="tmMake">一键生成</button>
             <span class="sub" id="tmMakeHint"></span>
           </div>
+          <!-- ★★ v0.35.0：**用过的团队表存档**（老大点名要的）——
+               飞书那边删表**不会通知任何人**，扩展手里的 baseToken 也不会自己变，
+               一张表没了之后，这一格里只剩两串长得一模一样的 token，
+               谁也认不出哪串对的是哪张表。所以每用过一张就记一条（带链接），
+               按时间倒序留在这儿，点开就能确认「我之前填的是哪一张」。
+               ★ 为什么嵌在这一步里、不单开一块：它只服务「我填的是哪张表」
+                 这一个问题；单开一块会让人以为它是个独立功能。
+               ★ 当前正在用的那条只做**视觉**标记（左侧竖条），不写「当前」二字。
+               ★ 一条记录都没有时整块 hidden（页面上不留空列表头）。 -->
+          <div class="arc" id="tmArc" hidden></div>
         </div>
 
         <!-- ② 到达方式
@@ -1634,7 +1663,7 @@ body{
              真正的版本号由 manage.js 从 manifest 读出来覆盖 ——
              写死在 HTML 里等于第二个版本号出处，manifest 一升版这里就开始说谎，
              而且没有任何症状。 -->
-        <div class="ab-ver"><span id="abVer">v0.34.0</span></div>
+        <div class="ab-ver"><span id="abVer">v0.35.0</span></div>
       </div>
     </section>
 

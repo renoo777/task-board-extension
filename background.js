@@ -574,7 +574,10 @@ if (chrome.runtime.onMessage) {
           tableId: r.tableId, peopleTableId: r.peopleTableId,
           /* ★ v0.34.0：归属有没有转成，要一路带回设置页 ——
              「这张表归你了」和「两张子表都好了」是两句不同的话。 */
-          ownerDone: !!r.ownerDone, ownerWhy: r.ownerWhy || ""
+          ownerDone: !!r.ownerDone, ownerWhy: r.ownerWhy || "",
+          /* ★ v0.35.0：「你原来记的那个数据表已经不在了」这类话也要带回去 ——
+             这是用户唯一能知道「表为什么换了」的地方。静默换表 = 数据分家。 */
+          note: r.note || ""
         });
       }).catch(function (e) {
         sendResponse({ ok: false, reason: (e && e.message) || String(e) });

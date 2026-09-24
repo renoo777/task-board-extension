@@ -82,6 +82,16 @@
      ★ 单独一个 key 而不是混进 items：items 是「数据」，这是「还没播报的」，
        混在一起的话球一上来就会把历史上所有任务重播一遍。 */
   var PEND = "taskboard.inbox.pending";
+  /* 用过的团队表**存档**（v0.35.0）。
+     ★ 为什么需要它（老大真机原话：「如果我已经填了多维表格我不小心删掉了，
+       那我怎么知道我之前填的是哪一张团队的多维表格？可以留一个存档」）：
+       飞书那边删表**不会通知任何人**，扩展手里的 baseToken 也不会自己变 ——
+       表没了之后，设置页上能看到的只有两串长得一模一样的 token，
+       谁也认不出哪串对的是哪张表。
+     ★ 为什么另开一个 key、不并进配置：它是一份**历史**（数组、有上限、
+       只增不减），并进配置会让每次读-改-写都多背一段它管不着的数据。
+       自定义形象库（`taskboard.mc.customs`）也是这么分的。 */
+  var LOGK = "taskboard.inbox.log";
 
   /* 团队表字段名。★ 与个人表（feishu.js 的 F）**不是同一套**，别混用。
      ★★ 「接收人 / 派发人」用**单行文本**（type 1）而不是单选：
@@ -687,10 +697,18 @@
          （「两张子表都好了」→「两张子表都好了，这张表归你了」）；
          ownerWhy 只在真的要转却没转成时有值。 */
       ownerDone: false, ownerWhy: "",
+      /* ★ v0.35.0：「你原来记的那个数据表已经不在了，改用/重建了一张」这类
+         必须让用户知道的事。它是**提示**不是失败 —— 表换掉不影响能不能用，
+         但不说的话用户只看到「生成好了」，而他那张表已经悄悄换了人。 */
+      note: "",
       steps: steps
     };
     function rec(name, ok, detail, optional) {
       steps.push({ name: name, ok: !!ok, detail: detail || "", optional: !!optional });
+    }
+    /* 认表那两步各自可能带一句 note（任务表 / 组员表各一张），都留下。 */
+    function keepNote(r) {
+      if (r && r.note) out.note = out.note ? (out.note + "；" + r.note) : r.note;
     }
 
     var known = trim(cfg && cfg.baseToken);
@@ -713,16 +731,18 @@
       return ensureTable(cfg, b.appToken, cfg.tableId, TASK_TABLE_NAME, TEAM_SCHEMA)
         .then(function (r) {
           out.tableId = r.tableId;
+          keepNote(r);
           rec((r.created ? "建了" : "用上了") + "「" + TASK_TABLE_NAME + "」子表", true,
-            r.added && r.added.length ? ("补上 " + r.added.length + " 列") : "");
+            r.note || (r.added && r.added.length ? ("补上 " + r.added.length + " 列") : ""));
         })
         .then(function () {
           return ensureTable(cfg, b.appToken, cfg.peopleTableId, PEOPLE_TABLE_NAME, PEOPLE_SCHEMA);
         })
         .then(function (r) {
           out.peopleTableId = r.tableId;
+          keepNote(r);
           rec((r.created ? "建了" : "用上了") + "「" + PEOPLE_TABLE_NAME + "」子表", true,
-            r.added && r.added.length ? ("补上 " + r.added.length + " 列") : "");
+            r.note || (r.added && r.added.length ? ("补上 " + r.added.length + " 列") : ""));
         })
         .then(function () {
           /* 新 Base 自带一张平台默认表，清掉它 —— 不清的话你打开会看到三张表。
@@ -813,24 +833,63 @@
   /* 认表：**ID 优先、名字兜底**，然后把缺的列补上。
      ★ 为什么 ID 优先：老大那张团队表可能改了名，按名字找会把他的表当成
        「不存在」再建一张 —— 数据分家（旧表还在写、新表永远是空的），零报错。
-     ★ 名字兜底只服务首次生成 —— 那时候还没有 ID 可认。 */
+     ★★ v0.35.0 修（老大真机原话：「团队多维表格生成报错没生成成功：
+       TableIdNotFound（错误码 1254041）」）：
+       老写法只在 ID 为**空**时才去找名字 —— ID 有值就拿着它直接调 `/fields`。
+       而 ID **有值也可能已经失效**：表被删了 / Base 换过了 / 那串压根不是
+       这个 Base 里的表（手填 token 时串台）。那时飞书回 1254041，
+       **整条一键生成就地中止**，用户看到的是飞书那句英文原文加一个错误码 ——
+       既不知道发生了什么，也不知道下一步该做什么。
+       ⇒ 改成**先列出这个 Base 里真实存在的表**（一次请求），再决定认哪个：
+         ① 存下来的 ID 真在里面 → 用它（老行为，一个字不变）；
+         ② 不在、但有同名的 → 用同名的；
+         ③ 都不在 → 建一张新的。
+     ★★ ②③ 必须**带一句话回去**（note）：静默换表是本项目最忌讳的一类失败 ——
+       旧表还在写、新表永远是空的，而用户以为一切正常。宁可多一次请求、
+       多一句回执，也不让「表被换掉了」这件事无声发生。
+     ★ 代价：每次一键生成多一次 listTables（首次生成本来也要调它）。
+       一键生成是低频动作，这点请求换「不再撞 1254041」很划算。
+
+     返回 { tableId, created, added, note }。 */
   function ensureTable(cfg, appToken, knownId, name, schema) {
     var id = trim(knownId);
-    if (id) {
-      return fillFields(cfg, appToken, id, schema).then(function (added) {
-        return { tableId: id, created: false, added: added };
-      });
-    }
     return Feishu.listTables(cfg, appToken).then(function (tables) {
-      var hit = (tables || []).filter(function (t) { return trim(t.name) === name; })[0];
+      var list = tables || [];
+      /* ① 存下来的 ID 真的在这个 Base 里 → 用它。
+         ★ 这一条是**唯一**能让后面 fillFields 拿到 ID 的入口 ——
+           正是它把 1254041 从根上挡掉：不再有「拿着没核对过的 ID 就去调接口」。 */
+      var alive = id ? list.filter(function (t) {
+        return trim(t.tableId) === id;
+      })[0] : null;
+      if (alive) {
+        return fillFields(cfg, appToken, id, schema).then(function (added) {
+          return { tableId: id, created: false, added: added, note: "" };
+        });
+      }
+      /* 那句话里带上**失效的那个 ID 原文**：用户能拿它去对上存档里那一条，
+         这是「原来我用的是哪张表」唯一的闭环。 */
+      var gone = id ? ("原来记的那个数据表（" + id + "）已经不在这个多维表格里了，") : "";
+      var hit = list.filter(function (t) { return trim(t.name) === name; })[0];
       if (hit) {
         return fillFields(cfg, appToken, hit.tableId, schema).then(function (added) {
-          return { tableId: hit.tableId, created: false, added: added };
+          return { tableId: hit.tableId, created: false, added: added,
+            note: gone + "改用同名的「" + name + "」表" };
         });
       }
       return Feishu.createTable(cfg, appToken, name, schema).then(function (tid) {
-        return { tableId: tid, created: true, added: [] };
+        return { tableId: tid, created: true, added: [],
+          note: gone + "重新建了一张「" + name + "」表" };
       });
+    }, function (e) {
+      /* ★ 连表都列不出来 = **这个 Base 本身打不开**（被删了 / token 不对 /
+         应用没权限）。这时**绝不自动新建**：自动新建会在这个人的飞书里
+         凭空多出一张表，还得他自己去收；而他原来的表很可能只是躺在回收站里
+         或者只是权限掉了。给他一句能照着做的话就够了 —— 清空「表链接」再点一次。
+         ★ 保留原错误的 code：设置页/诊断要看得出底下是 1254003 还是 1063002。 */
+      var e2 = new Error("打不开你填的这个多维表格（" + ((e && e.message) || "未知原因") +
+        "）。如果它已经在飞书里被删了，把「表链接」那一格清空再点一次「一键生成」，会新建一个");
+      e2.code = e && e.code;
+      throw e2;
     });
   }
 
@@ -860,7 +919,7 @@
   }
 
   var api = {
-    CFK: CFK, ITK: ITK, PEND: PEND,
+    CFK: CFK, ITK: ITK, PEND: PEND, LOGK: LOGK,
     TF: TF, TEAM_SCHEMA: TEAM_SCHEMA,
     PTF: PTF, PEOPLE_SCHEMA: PEOPLE_SCHEMA, ROLE_ME: ROLE_ME, ROLE_MEMBER: ROLE_MEMBER,
     TASK_TABLE_NAME: TASK_TABLE_NAME, PEOPLE_TABLE_NAME: PEOPLE_TABLE_NAME,
