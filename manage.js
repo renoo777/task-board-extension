@@ -2069,9 +2069,26 @@ function aiBind(){
           if (!full) { say(repEl, "先在「飞书同步」里配好应用（App ID / Secret）"); return; }
           if (!full.baseToken || !full.tableId) { say(repEl, "还没填团队表"); return; }
           return sendToBg({ type: "inbox-test", cfg: full }).then(function (res) {
-            say(repEl, (res && res.ok) ? ("连上了：" + (res.detail || "")) :
-                                        ("连不上：" + ((res && res.reason) || "未知原因")));
+            /* ★★★ v0.36.1：失败要说得出**卡在哪一步**。
+               原来是两态（连上了 / 连不上），而失败那句只读 `reason` ——
+               于是「表里缺列」这种**连接明明是通的**情况被归进「连不上」，
+               还把唯一有用的信息丢在半路，只剩「未知原因」。
+               现在三态：通了 / 通了但这张表不能用 / 真连不上。 */
+            if (res && res.ok) { say(repEl, "连上了：" + (res.detail || "")); return; }
+            if (res && res.stage === "fields") {
+              say(repEl, "连上了，但这张表还不能用：" + (res.reason || "列不齐"));
+              return;
+            }
+            /* 兜底也把 detail 算上：万一以后又有人只写了一条通道，
+               这里不能再把信息咽掉。 */
+            say(repEl, "连不上：" + ((res && (res.reason || res.detail)) || "未知原因"));
           });
+        }).catch(function (e) {
+          /* ★★★ v0.36.1：没有这个 catch，链路上任何一次 reject（读配置失败、
+             发消息失败、后台异常）都会让界面**永远停在「正在连接…」**——
+             那比报错更难查：用户以为还在连，其实早就失败了。
+             一句话说清，比无限等待诚实。 */
+          say(repEl, "连不上：" + ((e && e.message) || String(e)));
         });
       });
 

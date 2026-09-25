@@ -508,7 +508,13 @@ if (chrome.runtime.onMessage) {
     }
     if (msg.type === "notify-test") {
       if (typeof Notify === "undefined" || !chrome.notifications) {
-        sendResponse({ ok: false });
+        /* ★★★ v0.36.1：失败必须说得出原因。原来这里是个光秃秃的 ok:false，
+           前端只能显示「未知原因」—— 而原因其实很明确（模块没起来 /
+           浏览器不给通知权限），只是没人把它说出口。 */
+        sendResponse({
+          ok: false,
+          reason: (typeof Notify === "undefined") ? "模块没加载" : "浏览器没给通知权限"
+        });
         return;
       }
       chrome.storage.local.get(KEY, function (o) {
@@ -533,10 +539,22 @@ if (chrome.runtime.onMessage) {
         var tf = Inbox.TF;
         var miss = Object.keys(tf).filter(function (k) { return names.indexOf(tf[k]) < 0; });
         if (miss.length) {
+          /* ★★★ v0.36.1：同一个失败必须能被两条通道取到。
+             设置页读的是 `reason`（它管「为什么没成」），这里原来只写了
+             `detail`（它管「细节是什么」）—— 于是「表里缺列」这件**最该被
+             看见**的事被丢在半路，用户只看到「连不上：未知原因」，
+             而真相是他自己就能修的表结构问题。
+             ★ stage 让前端说得准：这不叫「连不上」—— `listFields` 明明成功了，
+               连接是通的。是「连上了，但这张表还不能用」。混成一句会把
+               人往权限 / 网络方向带（本项目栽过好几回）。
+             ★ detail / missing 照旧留着：要清单的调用点读它们。 */
+          var missNames = miss.map(function (k) { return tf[k]; });
           sendResponse({
             ok: false,
-            detail: "表里还缺这些列：" + miss.map(function (k) { return tf[k]; }).join("、"),
-            missing: miss.map(function (k) { return tf[k]; })
+            reason: "表里还缺这些列：" + missNames.join("、"),
+            detail: "表里还缺这些列：" + missNames.join("、"),
+            missing: missNames,
+            stage: "fields"
           });
           return;
         }
@@ -598,7 +616,13 @@ if (chrome.runtime.onMessage) {
       return true;
     }
     if (msg.type === "inbox-try") {
-      if (typeof Inbox === "undefined" || !chrome.notifications) { sendResponse({ ok: false }); return; }
+      if (typeof Inbox === "undefined" || !chrome.notifications) {
+        sendResponse({
+          ok: false,
+          reason: (typeof Inbox === "undefined") ? "模块没加载" : "浏览器没给通知权限"
+        });
+        return;
+      }
       /* ★ 试的这一条是**假的**，不写任何存储、不消耗额度 ——
          用户试完就该还能收到真的那一条。 */
       var demo = { from: "（示例）", title: "把这份周报发给客户", date: Inbox.todayStr() };
@@ -638,7 +662,13 @@ if (chrome.runtime.onMessage) {
     if (msg.type === "sync-selftest") {
       Sync.readCfg().then(function (cfg) {
         if (!cfg || !cfg.appId || !cfg.appSecret || !cfg.baseToken || !cfg.tableId) {
-          sendResponse({ ok: false, needConfig: true });
+          /* ★ v0.36.1：光有 needConfig 标记还不够 —— 那是给前端分支用的，
+             而 reason 是给人看的。两个都留着：一个管分流，一个管说清。 */
+          sendResponse({
+            ok: false,
+            needConfig: true,
+            reason: "四个字段（App ID / Secret / 多维表格地址 / 数据表 ID）还没填全"
+          });
           return;
         }
         Feishu.selftest(cfg).then(sendResponse);
