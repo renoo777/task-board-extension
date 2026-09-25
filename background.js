@@ -536,7 +536,21 @@ if (chrome.runtime.onMessage) {
       /* 只列字段、不写数据：测试连接不该在别人的表里留下痕迹。 */
       Feishu.listFields(tc).then(function (fields) {
         var names = (fields || []).map(function (f) { return f.name; });
-        var tf = Inbox.TF;
+        /* ★★★ v0.38.1：判的是**必需列**（`Inbox.TF_REQ`），不是 `Inbox.TF`。
+           原来直接遍历 `TF` 会把**兼容列**也算成必需 —— 「派发人」是 v0.32.0
+           之前的旧列名，早已降级成「回退读取」，`TEAM_SCHEMA` 也根本不建它。
+           于是老大的表 10 列全对，屏幕上却是「连上了，但这张表还不能用：
+           表里还缺这些列：派发人」——
+           一句话把人指去**改自己本来没错的表结构**。 */
+        var tf = Inbox.TF_REQ;
+        if (!tf) {
+          /* 后台脚本比设置页旧（升级后没重新加载扩展）时，`Object.keys(undefined)`
+             会抛一句「Cannot convert undefined or null to object」——
+             用户看了等于没看。这里明说是版本没对上。 */
+          sendResponse({ ok: false, stage: "stale",
+            reason: "扩展的脚本版本对不上（后台是旧的），请在扩展管理页点一次「重新加载」" });
+          return;
+        }
         var miss = Object.keys(tf).filter(function (k) { return names.indexOf(tf[k]) < 0; });
         if (miss.length) {
           /* ★★★ v0.36.1：同一个失败必须能被两条通道取到。
@@ -549,9 +563,13 @@ if (chrome.runtime.onMessage) {
                人往权限 / 网络方向带（本项目栽过好几回）。
              ★ detail / missing 照旧留着：要清单的调用点读它们。 */
           var missNames = miss.map(function (k) { return tf[k]; });
+          /* ★★★ v0.38.1：说出「为什么」之后还得说出「怎么办」。
+             「缺列」这条**用户自己就能修**，而屏幕上原来只报缺了什么、
+             一个字都不提下一步 —— 老大就停在这一屏上。 */
           sendResponse({
             ok: false,
-            reason: "表里还缺这些列：" + missNames.join("、"),
+            reason: "表里还缺这些列：" + missNames.join("、") +
+                    "（点「一键生成」会把这几个列自动补上，不用手建）",
             detail: "表里还缺这些列：" + missNames.join("、"),
             missing: missNames,
             stage: "fields"

@@ -123,6 +123,33 @@
     doneAt: "完成时间"
   };
 
+  /* ---------- ★★★ v0.38.1：把「列」的三种语义拆开 ----------
+     一个 `TF` 原来被三处按各自的需要解释，它们**必然**会互相矛盾：
+       ① 建表     —— `TEAM_SCHEMA`（只建该有的那几列）
+       ② 读写     —— `TF`（含兼容用的旧列名）
+       ③ 必检     —— **「测试连接」时判「这张表能不能用」**
+     ③ 直接拿了 ② 的全量（`Object.keys(Inbox.TF)`），于是要求一张
+     **我们自己都不会建**的表结构 —— `TEAM_SCHEMA` 里根本没有「派发人」，
+     而 `from` 早在 v0.32.0 就降级成了「老表还没补这一列时照样能读」。
+     ⇒ 症状（老大 2026-09-25 真机原话）：
+         「连上了，但这张表还不能用：表里还缺这些列：派发人」
+         —— 他的团队表 10 列**一个不缺**，唯独没有一个**本就不该有**的列。
+
+     拆法：一份定义（`TF`）＋ 两个派生视图。谁要问「能不能用」只许读 `TF_REQ`。 */
+
+  /* **兼容列** —— 只用于「回退读取」的旧列名。缺了照常用，不进建表、不进必检。
+     ★ 键名与 `TF` 一一对应（值就是真实列名），这样 `TF_REQ` 能直接算出来。 */
+  var TF_LEGACY = { from: 1 };
+
+  /* **必需列** = `TF` 减去兼容列。**判据只有这一处。**
+     ★ 别在别处再抄一份清单、也别再遍历 `TF` 来问「缺不缺列」——
+       原来 `background.js` 的 `Object.keys(Inbox.TF)` 就是那个 bug 的现场。 */
+  var TF_REQ = (function () {
+    var o = {};
+    Object.keys(TF).forEach(function (k) { if (!TF_LEGACY[k]) o[k] = TF[k]; });
+    return o;
+  })();
+
   /* ---------- 组员表的字段（v0.33.0 / v0.34.0）----------
      ★★ 为什么名单要单开一张表，而不是继续在设置页手填：
         名单和「我是谁」是**全组共有的事实**。放在每个人的扩展里，就会出现
@@ -308,6 +335,23 @@
       /* 上次拉组员表的时间。轮询靠它决定「这一分钟要不要去拉」——
          跟别的字段一样只是个数值，界面上看不见。 */
       peopleAt: Number(v.peopleAt) || 0,
+      /* ★★★ v0.38.0：认人的结果必须**读得回来**。
+         配置有两扇门，而它们是不对称的：`saveCfg` 是**原样存**（不过滤），
+         这里是**白名单**（只保留列出来的字段）。于是这四个键
+         存得进去、**读不回来** —— 写的时候在，下一次读就没了。
+         症状极难查，因为它看起来像「功能没做」：
+           · `meId` 丢 ⇒ 每次派发都得重新认一次人（多一轮网络），
+             更要命的是「没名字时拿 id 兜底」这条路**手里根本没有 id**；
+           · `meSrc` / `meSuspect` 一起丢 ⇒ 设置页那行
+             「从哪认出来的 / 是不是占位名」**永远不显示**；
+           · `meWhy` 丢 ⇒ 认人失败的原因过不了下一次读，
+             界面上只剩一句笼统的「先认一下你是谁」——老大这次报的就是它。
+         ★ 这三个键是 v0.37.0 加的，加的时候只改了写、没改读。
+         999 条门里没有一条看着「白名单是不是漏了键」——已补（见 _validate.py）。 */
+      meId: trim(v.meId),
+      meSrc: trim(v.meSrc),
+      meSuspect: v.meSuspect === true,
+      meWhy: trim(v.meWhy),
       notifyOn: v.notifyOn === true,
       speakOn: v.speakOn === true
     };
@@ -420,11 +464,277 @@
     var p = (got && got.people) || [];
     if (p.length) o.people = p.join("、");
     if (trim(got && got.me)) o.me = trim(got.me);
+    /* ★ v0.38.0：`meId` 也要跟着进来 —— 名字拿不到时它就是派发人的落点
+       （见 `whoOf`）。少了这一行，认出来的 id 会在下一次读配置时丢掉。 */
+    if (trim(got && got.meId)) o.meId = trim(got.meId);
     /* 记一笔「刚拉过」——轮询靠它判断这一分钟要不要再去拉组员表。
        ★ 只有真读过才盖时间戳：读失败还盖的话，会变成「每 5 分钟才试一次」，
          网断的时候恢复得比预期慢。 */
     if (got && got.at) o.peopleAt = Number(got.at) || o.peopleAt;
     return o;
+  }
+
+  /* ============================================================
+     认人：我是谁（v0.37.0）
+     ============================================================
+     一句话职责：**零配置**认出「这张表里的派发人应该是谁」，并在组员表里
+     把那一行补上。它服务的是「第一次上手」——不该让人先去表里认领自己。
+
+     ★★★ 为什么必须提成**公共函数**（v0.36.0 的形态不是这样）：
+       v0.36.0 那套三级认人是 `generate()` 里的一个**局部函数**（`ownerTarget`），
+       只有「一键生成 / 转归属」那条链路调得到。于是「派发」那条路上 `cfg.me`
+       仍然是空的 —— 老大报的那句「现在提示缺少派发人」就是这么来的。
+       同一件事实（我是谁）在两个地方各算一遍，迟早漂开；
+       提上来之后**派发 / 转归属 / 设置页三条路共用同一个实现**。
+
+     ★★ 为什么「零配置」成立：应用是自建应用，登记时必然绑了所有者，
+       而那个 open_id 与文档域里的身份完全一致（实测四处：应用 owner / 应用 creator /
+       表 owner / 表最近修改人，见 feishu.js `appOwner` 那段）。
+       所以不填任何东西也能知道「你是谁」——**知道的是 id，不是名字**。
+
+     ★★★ 「知道 id」与「知道名字」是两件事，这是本功能最容易踩空的地方：
+       飞书对姓名做了字段级管控 —— `GET /contact/v3/users/:open_id` 的完整返回里
+       **只有 open_id / union_id / mobile_visible**，姓名那一格压根不返回；
+       `contact/v3/users/search` 直接报 99991663（只认 user token）；
+       应用信息里的 `owner.name`、文档元数据、协作者列表**都不带名字**。
+       ⇒ 纯只读的路全试过（2026-09-25 穷举，见 `_probe_me.py` / `_probe_me2.py`），
+         拿不到名字。
+
+     ★★ 破局点是**组员表的「成员」人员字段**：它是个 **open_id → 名字 的解析器**。
+       写进去只需要 `[{id:"ou_…"}]`，**名字是飞书在「读」的时候补上的**
+       （实测：写入 `ou_97df…` 读回 `{"id":"ou_97df…","name":"周明(ming.zhou)"}`）。
+       所以流程是：认出 open_id → 补一行 → **回读** → 名字到手。
+
+     ★★★ 但实测还发现一件事，必须写在这儿（否则将来会有人把它当成 bug 再查一遍）：
+       同一个读法下，周明解析出真名 `周明(ming.zhou)`、应用自己解析出 `任务插件`，
+       而**应用所有者那个账号解析出来是 `用户613803`** —— 形态上就是飞书给的
+       脱敏/占位名。⇒ 于是有了 `looksPlaceholder`：**拿到了占位名要能认出来**，
+       不能把它当成「拿到了名字」（它是合法非空字符串，混过去零报错）。
+
+     ★ 三条降级纪律（顺序即优先级，a/b/c 都拿不到才提示人工）：
+       a 组员表里「身份」=「本人」那行 —— 人工明确指认，最权威，且**姓名列优先**
+       b 组员表里 uid == 应用所有者那行 —— id 确定，名字解析得到
+       c 应用登记所有者 —— 纯零配置，只有 id
+     ============================================================ */
+
+  /* 飞书给的**占位名**：`用户` + 一串数字（实测：`用户613803`）。
+     ★ 为什么必须单独认它：它是一条**合法、非空**的字符串 —— 不认的话，
+       「拿到了名字」与「拿到了一个占位名」在代码里走同一条路，
+       后果是把 `用户613803` 当成派发人**静默**写进团队表。
+     ★ 判据来自实测而不是猜：同一次读里，同租户的另一个人解出 `周明(ming.zhou)`，
+       只有这个账号解出 `用户613803` —— 形态明显不同，不是「有人就叫这个名」。 */
+  var PLACEHOLDER_NAME = /^用户\d+$/;
+  function looksPlaceholder(n) { return PLACEHOLDER_NAME.test(trim(n)); }
+
+  /* 所有者 id 是 34 位的串（`ou_` + 32 hex），原样打进界面会把那一行撑开、
+     把真正的信息（到底认成了谁）挤没。缩成 前 8 + 后 4。
+     ★ 放在顶层、只有这一份：它原来在 `generate()` 里是局部的，而认人的提示语
+       现在有多处要用 —— 抄成两份的话，漂移的症状是「设置页缩了、提示里没缩」。 */
+  function shortId(v) {
+    var s = trim(v);
+    return s.length > 14 ? (s.slice(0, 8) + "\u2026" + s.slice(-4)) : s;
+  }
+
+  /* ★★★ v0.38.0：派发人**写进团队表**的那个值 —— 「我是谁」的唯一口径。
+     有名字用名字（人能读），没名字用 open_id。
+     ★★ 为什么 id 可以当派发人（老大 2026-09-25 原话就是
+       「派发人不需要去填写，默认 = 飞书 openid」）：
+       「你是谁」的**权威答案**本来就是 open_id —— 它是飞书发的、零配置拿得到
+       （实测四处一致：应用 owner / creator / 表 owner / 表最近修改人），
+       名字只是**显示层**，而且偏偏是飞书做了字段级管控的那一格
+       （`contact/v3/users/:open_id` 的完整返回**只有** open_id/union_id/
+       mobile_visible，姓名压根不返回）。把名字当**前提**，等于把「能不能派发」
+       绑在一个飞书不肯给的字段上 —— 这正是老大那句「提示需要派发人」的根：
+       认人链走完了，可它最后一步要的是名字，拿不到就整条作废。
+     ★★★ 为什么**不能**直接把 `cfg.me` 改成 id（这是最容易做错的一步）：
+       `cfg.me` 还兼着另一件事 —— `mineOnly()` 用它比对团队表的「接收人」，
+       也就是「**别人派给我的任务，我收不收得到**」。而接收人写的是**名字**
+       （派发方的下拉从组员表来）。一旦把 id 塞进 `cfg.me`，这条匹配就永远
+       不成立，症状是「别人派给我的任务全丢」——而且是**一个字都不报**的静默。
+       ⇒ 两个语义分开：`cfg.me` 仍是名字（**允许为空**），`cfg.meId` 是 id；
+          「派发人是谁」只认这个 `whoOf`。 */
+  function whoOf(cfg) {
+    var n = trim(cfg && cfg.me);
+    var id = trim(cfg && cfg.meId);
+    /* ★★★ 占位名（`用户613803`）**不算名字**，这一格是本功能最阴的一处：
+       它是一条**合法、非空**的字符串，形态上跟真名没法区分（除了 `用户+数字`），
+       当成名字用掉不会报任何错 —— 于是团队表的「我是谁」列里会静默写进
+       `用户613803`，而它**没有信息量**：读的人既不知道是谁，也没法跟账号对上。
+       open_id 至少能对应到唯一一个账号，而且它才是「你是谁」的权威答案。
+       ⇒ 优先级：**真名 → open_id → 占位名**（最后这个只在我们两样都拿不到时兜底，
+         总比把这一格留空好）。 */
+    if (n && !looksPlaceholder(n)) return n;
+    return id || n;
+  }
+
+  /* 组员表的行 → 可直接判的数组。带上 `recordId`：命中但身份不对时要**只改那一格**。 */
+  function peopleRows(recs) {
+    return (recs || []).map(function (r) {
+      var p = fromPeopleFields(r);
+      p.recordId = (r && r.recordId) || "";
+      return p;
+    });
+  }
+
+  /* 读组员表。**不抛** —— 读不到是一种正常结果（还没配 / 网络抖），
+     调用方要的是「能不能认人」，不是「为什么读不到」的异常。 */
+  function readPeopleRows(cfg) {
+    var pid = trim(cfg && cfg.peopleTableId);
+    if (!pid) return Promise.resolve({ ok: false, rows: [], why: "还没配「组员」表" });
+    return Feishu.listAll(derived(cfg, cfg.baseToken, pid)).then(function (recs) {
+      return { ok: true, rows: peopleRows(recs), why: "" };
+    }, function (e) {
+      return { ok: false, rows: [], why: (e && e.message) || "读不到「组员」表" };
+    });
+  }
+
+  /* 补「本人」这一行（幂等）。返回 `{done, how, msg}`。
+     ★★ 为什么用 `done/msg` 而**不是** `ok/why`：#192 那扇「失败应答必须说得出原因」
+       的门是**按形状认站点**的（`ok: false` + `why: "…"`），而这几个对象是
+       **内部步骤结果**，从来不会当成应答发给界面 —— 它一旦生成就立刻被折进
+       一句人话（`msg`）里。用同一个形状会被那扇门当成「一个没登记原因码的失败应答」
+       而报红，那是**门在按形状误认**，不是这里真的少了什么。
+       ⇒ 换形状，而不是往原因码登记表里塞一句人话（登记表是**受控词表**，
+         塞句子会让它失去意义 —— 那才是真的把门弄坏）。
+     ★★ 三条纪律：
+       ① **按 open_id 认，不按「身份」列认** —— 身份是手工标的、可能标错或没标；
+          open_id 是飞书给的，权威。
+       ② 命中但身份不对时**只改那一格**（updateRaw 传增量）。整行回写会静默盖掉
+          别人在你读取之后改的列（铁律 486），而且不报任何错。
+       ③ 新建时**不写「姓名」列**：写进去的只有 id，名字是飞书在读的时候解析的。
+          自己填一个名字进去，反而会盖掉飞书解析出来的那一个
+          （读取侧 `txt(姓名) || u.name`，姓名列优先）。 */
+  function ensureMeRow(cfg, oid, same) {
+    var pid = trim(cfg && cfg.peopleTableId);
+    if (!pid) return Promise.resolve({ ok: false, how: "", why: "还没配「组员」表，写不进去" });
+    var d = derived(cfg, cfg.baseToken, pid);
+    if (same && !same.recordId) {
+      /* ★★★ 找到人、却拿不到那一行的 recordId ⇒ **什么都不写，并说出来**。
+         为什么不落到下面的「新建一行」：那会**绕过幂等**，在表里造出同一个人的
+         第二条记录 —— 而幂等正是这个功能的硬指标（连点三次仍然只有一行）。
+         「拿不准就不写」在这里比「尽量把事办了」重要：多一行是**永久**的脏数据，
+         而且它看起来完全正常（两条一模一样的「本人」）。 */
+      return Promise.resolve({
+        done: false, how: "",
+        msg: "组员表里那一行读不出记录 ID（八成是这次列表没读全），先不动它"
+      });
+    }
+    if (same && same.recordId) {
+      var f = {};
+      f[PTF.role] = ROLE_ME;
+      return Feishu.updateRaw(d, [{ recordId: same.recordId, fields: f }]).then(function () {
+        return { done: true, how: "updated", msg: "" };
+      }, function (e) {
+        return { done: false, how: "", msg: (e && e.message) || "改不了「组员」表里的那一行" };
+      });
+    }
+    var nf = {};
+    nf[PTF.member] = [{ id: oid }];
+    nf[PTF.role] = ROLE_ME;
+    return Feishu.createRaw(d, [nf]).then(function () {
+      return { done: true, how: "created", msg: "" };
+    }, function (e) {
+      return { done: false, how: "", msg: (e && e.message) || "写不进「组员」表" };
+    });
+  }
+
+  function meFrom(row, oid, src) {
+    var nm = trim(row && row.name);
+    return {
+      meId: trim(oid) || trim(row && row.uid), me: nm, src: src,
+      suspect: looksPlaceholder(nm), why: "", wrote: ""
+    };
+  }
+
+  /* 认人。返回（**形状与 listPeople 兼容**，可以直接喂 applyPeople）：
+       { meId, me, src, suspect, why, wrote, people:[...], rows:[...], at }
+     opts.write === false 时**只读**（不补行，用于「点一下看看现在认成谁」这类场景）。
+     opts.rows 可传入已读到的行，省一次列表请求。 */
+  function resolveMe(cfg, opts) {
+    opts = opts || {};
+    var write = opts.write !== false;
+    var readP = opts.rows
+      ? Promise.resolve({ ok: true, rows: opts.rows, why: "" })
+      : readPeopleRows(cfg);
+    return readP.then(function (got) {
+      var rows = got.rows || [];
+      var names = [], seen = {};
+      rows.forEach(function (r) {
+        if (r.name && !seen[r.name]) { seen[r.name] = 1; names.push(r.name); }
+      });
+      function pack(extra) {
+        var o = {
+          people: names, rows: rows, at: Date.now(),
+          meId: "", me: "", src: "", suspect: false, why: "", wrote: ""
+        };
+        Object.keys(extra || {}).forEach(function (k) { o[k] = extra[k]; });
+        return o;
+      }
+      /* a 级：人工明确指认。注意它取的是 `fromPeopleFields` 的 name，
+         而那个值是 `txt(姓名) || u.name` —— 所以**在「姓名」列手填一次，
+         会永久盖过飞书解析出来的名字**（老大那种占位名就靠这条路改掉）。 */
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].role === ROLE_ME && rows[i].name) {
+          return pack(meFrom(rows[i], rows[i].uid, "组员表"));
+        }
+      }
+      /* b/c 级都要先知道「应用属于谁」—— 那是唯一零配置的身份来源。 */
+      return Feishu.appOwner(cfg).then(function (ow) {
+        var oid = trim(ow && ow.id);
+        if (!oid) {
+          return pack({ why: "认不出你是谁：飞书没告诉我这个应用属于哪个账号" });
+        }
+        var same = null;
+        for (var j = 0; j < rows.length; j++) {
+          if (trim(rows[j].uid) && trim(rows[j].uid) === oid) { same = rows[j]; break; }
+        }
+        /* b 级：表里已经有这个人、身份也已经对了 —— **一个写请求都不发**。
+           这就是 P0-4 幂等的落点：连点三次，表里仍然只有那一行。 */
+        if (same && same.name && same.role === ROLE_ME) {
+          return pack(meFrom(same, oid, "组员表"));
+        }
+        if (!write) {
+          return pack({
+            meId: oid, me: same ? trim(same.name) : "", src: "应用",
+            why: got.ok ? "" : got.why
+          });
+        }
+        if (!got.ok) {
+          return pack({
+            meId: oid, src: "应用",
+            why: "认出了你的账号（" + shortId(oid) + "），但" + got.why + "，补不进去"
+          });
+        }
+        return ensureMeRow(cfg, oid, same).then(function (r) {
+          if (!r.done) {
+            return pack({
+              meId: oid, src: "应用",
+              why: "认出了你的账号（" + shortId(oid) + "），但" + r.msg
+            });
+          }
+          /* ★★ 写完**必须回读**：写进去的只有 open_id，名字是飞书在**读**的时候
+             才解析出来的。不复读就等于假设「人已经被认出来了」——
+             而这正是本项目栽过的那类错（接口返回成功 ≠ 事情办成，铁律 523）。 */
+          return readPeopleRows(cfg).then(function (g2) {
+            var back = null;
+            for (var k = 0; k < (g2.rows || []).length; k++) {
+              if (trim(g2.rows[k].uid) === oid) { back = g2.rows[k]; break; }
+            }
+            if (!back || !trim(back.name)) {
+              return pack({
+                meId: oid, src: "应用",
+                why: "认出了你的账号（" + shortId(oid) + "），但飞书没给名字"
+              });
+            }
+            var o = meFrom(back, oid, "组员表");
+            o.wrote = r.how;
+            return pack(o);
+          });
+        });
+      }, function (e) {
+        return pack({ why: "查「应用属于谁」失败：" + ((e && e.message) || "未知原因") });
+      });
+    });
   }
 
   /* ---------- 字段转换 ---------- */
@@ -485,9 +795,19 @@
   /* ---------- 拉取：只留「派给我的」 ----------
      ★★ 这一步是隔离的第一道门：表里全是别人的任务，只有接收人 == me 的才留下。
         不做过滤的话，二十几个人的任务会全灌进你的本地，而且看起来「像是同步来的」。 */
-  function mineOnly(items, me) {
-    var m = trim(me);
-    return (items || []).filter(function (it) { return it && sameName(it.to, m); });
+  function mineOnly(items, me, meId) {
+    var m = trim(me), i = trim(meId);
+    return (items || []).filter(function (it) {
+      if (!it) return false;
+      /* ★★ v0.38.0 两条：
+         ① 「我」可以是名字**或** open_id —— 名字拿不到时，派发侧会把 id 写进
+            团队表（见 `whoOf`），拉取侧就得认得出那一条，否则自己派出去的任务
+            自己收不回来。
+         ② `m` 为空时**直接不匹配**（原来会退化成 `sameName(it.to, "")`）——
+            飞书表里「接收人」空着的记录不少（草稿行、别人手填漏了），
+            原来它们会被当成「派给我的」**静默**灌进本地清单。 */
+      return (m && sameName(it.to, m)) || (i && sameName(it.to, i));
+    });
   }
 
   /* 远端拉回来的 items → 与本已有的合并。
@@ -624,14 +944,62 @@
     return api.store.set(p).then(function () { return s; });
   }
 
+  /* 派发前必须有「我」。已有的直接用；没有就**现场认一次**（v0.37.0）。
+     ★★ 为什么把认人放进 dispatch，而不是只靠界面先认：
+       界面有两条路（项目行上的按钮 / 抽屉里的单条派发），任何一条漏了调用，
+       症状都是老大原话那句「明明认出来了，这里还问我要」——
+       而那种错**只在界面上**看得到：单测里 dispatch 永远有人喂好 cfg.me，全绿。
+       把判据放在**唯一的写入口**上，两条路就都跑不掉。
+     ★ 认到了顺手落盘，否则每次派发都要多一轮「读组员表 + 查应用」。 */
+  function ensureMe(cfg) {
+    var have = whoOf(cfg);
+    if (have) return Promise.resolve(have);
+    return resolveMe(cfg).then(function (r) {
+      /* ★★★ v0.38.0：派发人要的是「**你是谁**」，不是「你叫什么」。
+         名字拿不到（飞书字段级管控 / 通讯录不可见 / 只解析出占位名）都不该
+         拦住派发 —— open_id 是零配置就拿到手的那个权威答案，名字只是显示层。
+         老大的原话：「派发人不需要去填写，默认 = 飞书 openid」。
+         ★ v0.37.0 这里写的是「没有 `r.me` 就 throw」—— 于是
+           「组员表没配 / 补不进去 / 飞书没给名字」这三种情况**全都派不出去**，
+           而它们一个都不影响「把任务写进团队表」这件事本身。
+           把可选增强（拿名字）当成了必经步骤，这是设计层的错，不是某一行。 */
+      /* ★★★ v0.38.2：口径与 `whoOf` 统一 —— 名字优先，但**占位名不算名字**。
+         v0.38.0 这里写的是 `trim(r.me) || trim(r.meId)` ⇒ 组员表「身份=本人」
+         那一行由飞书解析出来的**占位名**（`用户613803`）会被当成派发人写进
+         团队表的「我是谁」列 —— 而它没有任何信息量：读的人既不知道是谁，
+         也没法拿它跟任何账号对上（open_id 才是「你是谁」的权威答案）。
+         同一个功能里 `whoOf` 明明已经过滤了占位名，这里却没过 ⇒
+         **同一件事两种口径** —— 本项目反复栽的就是这一类。
+         ⇒ 不再手写一遍优先级，直接复用 `whoOf`：真名 → open_id → 占位名（末位兜底）。 */
+      var who = whoOf({ me: r && r.me, meId: r && r.meId });
+      if (!who) throw new Error(trim(r && r.why) || "认不出你是谁");
+      var o = readCfg(cfg);
+      /* ★ 名字**有才写**：写空串会把上一次认到的名字冲掉（而那是唯一能读的）。 */
+      if (trim(r.me)) o.me = trim(r.me);
+      if (trim(r.meId)) o.meId = trim(r.meId);
+      o.meSrc = trim(r.src);
+      o.meSuspect = !!r.suspect;
+      /* ★★ v0.38.0：认人**没走到名字**时，原因必须留下来。
+         只写内存的话，下一次打开弹窗就没了 —— 界面上只剩一句笼统的
+         「先认一下你是谁」，而真正的原因（读不到表 / 写不进去 / 飞书没给名字）
+         跟着那次弹窗一起消失。老大这次报的坑正是这个：
+         看得见的是结果，看不见的是为什么。 */
+      o.meWhy = trim(r.me) ? "" : trim(r.why);
+      return saveCfg(o).then(function () { return who; });
+    });
+  }
+
   /* ---------- 派发：写一条到团队表 ---------- */
   function dispatch(cfg, task, to) {
     if (!ready(cfg)) return Promise.reject(new Error("团队派发没配好"));
     var who = trim(to);
     if (!who) return Promise.reject(new Error("没选接收人"));
-    if (!trim(cfg.me)) return Promise.reject(new Error("没填「我是谁」"));
-    var fields = toTeamFields(task, cfg.me, who);
-    return Feishu.createRaw(cfg, [fields]);
+    /* ★★ v0.38.0：`ensureMe` 给回来的是**派发人的标识**（真名，拿不到就是
+       open_id），不再要求「必须是个名字」—— 这是老大原话
+       「派发人不需要去填写，默认 = 飞书 openid」落到代码里的那一行。 */
+    return ensureMe(cfg).then(function (from) {
+      return Feishu.createRaw(cfg, [toTeamFields(task, from, who)]);
+    });
   }
 
   /* ---------- 拉取一轮：返回 { items, added, fresh } ----------
@@ -642,7 +1010,9 @@
     if (!ready(cfg)) return Promise.reject(new Error("团队派发没配好"));
     return Feishu.listAll(cfg).then(function (recs) {
       var all = recs.map(fromTeamFields);
-      var mine = mineOnly(all, cfg.me);
+      /* ★★ v0.38.0：把 `meId` 一起传下去 —— 「我」有两个合法形态
+         （名字 / open_id，见 `whoOf`），漏传的话自己派出去的任务收不回来。 */
+      var mine = mineOnly(all, cfg.me, cfg.meId);
       var m = mergeItems(known || [], mine);
       var seenIds = {};
       (known || []).forEach(function (x) { if (x && x.id) seenIds[x.id] = 1; });
@@ -728,34 +1098,33 @@
       out.created = !!b.fresh;
       if (!b.fresh) rec("用你填的那个多维表格", true, b.appToken);
 
-      /* ---------- 认人（v0.36.0）----------
-         三级兜底，**顺序即优先级**：明确指认 > 老大自己填的表 > 推断。
-         ★ 为什么第三级可以「零配置」：应用是自建应用，登记时必然绑了所有者，
-           而那个人就是老大的账号 —— 实测它与文档域身份是同一个 open_id
-           （证据见 feishu.js appOwner 那段）。所以不填任何东西也能认出人。 */
+      /* ---------- 认人（v0.36.0 三级 → v0.37.0 改成调公共函数）----------
+         ★★★ 这一整块逻辑**搬到了顶层 `resolveMe`**，这里只留一个薄壳。
+           为什么必须搬：它原来是个**局部函数**，只有「一键生成」这条链路调得到 ——
+           于是「派发」那条路上 `cfg.me` 仍然是空的，老大原话那句
+           「现在提示缺少派发人」就是这么来的。
+           同一件事实（我是谁）在两个地方各算一遍，迟早漂开。
+         ★ 留薄壳而不是直接调：转归属要的是 `{mt, mid, src}`
+           （member_type + id），而 resolveMe 回的是 `{meId, me, src}` ——
+           形态不同，转换放在调用点最清楚。
+         ★ 「我的飞书邮箱」只在这里有：`transfer_owner` 接受邮箱，而派发那条路
+           要的是**名字**，邮箱在那儿没用 —— 所以它不进 resolveMe。 */
       function ownerTarget(appToken) {
         var mail = trim(cfg && cfg.ownerMail);
         if (mail) return Promise.resolve({ mt: "email", mid: mail, src: "邮箱" });
-        var fromPeople = out.peopleTableId
-          ? Feishu.listAll(derived(cfg, appToken, out.peopleTableId)).then(function (recs) {
-              var meId = fromPeopleRecords(recs).meId;
-              /* ★ member_type 按 id 前缀判，不写死 "openid"：老大在组员表里
-                 填的可能是裸 user_id，写死的话飞书会回「成员不存在」，
-                 而 id 明明是对的 —— 人会往权限上想。 */
-              return meId ? { mt: Feishu.memberTypeOf(meId), mid: meId, src: "组员表" } : null;
-            }, function () { return null; })
-          : Promise.resolve(null);
-        return fromPeople.then(function (t) {
-          if (t) return t;
-          /* 第三级。**失败不抛出** —— 认不出人是这条链路本来就允许的结果
-             （三处都没配 / 应用查不到自己），不该让整步炸掉。
-             ★ 也**不看 b.fresh**：认人这件事跟你填没填 baseToken 无关。 */
-          return Feishu.appOwner(cfg).then(function (ow) {
-            return (ow && ow.id)
-              ? { mt: Feishu.memberTypeOf(ow.id), mid: ow.id, src: "应用" }
-              : null;
-          }, function () { return null; });
-        });
+        /* ★ 必须把**刚建出来的**组员表 id 带进去：`cfg.peopleTableId` 在这一步
+           还是它进来时的值（首次生成时是空的），拿它去读会读成「还没配组员表」。 */
+        var c = {};
+        Object.keys(cfg || {}).forEach(function (k) { c[k] = cfg[k]; });
+        c.baseToken = trim(appToken) || c.baseToken;
+        if (out.peopleTableId) c.peopleTableId = out.peopleTableId;
+        return resolveMe(c).then(function (r) {
+          if (!r || !trim(r.meId)) return null;
+          /* ★ member_type 按 id 前缀判，不写死 "openid"：老大在组员表里
+             填的可能是裸 user_id，写死的话飞书会回「成员不存在」，
+             而 id 明明是对的 —— 人会往权限上想。 */
+          return { mt: Feishu.memberTypeOf(r.meId), mid: r.meId, src: r.src || "应用" };
+        }, function () { return null; });
       }
 
       /* 转移之后**回读**表上的所有者，确认真的转成了这个人。
@@ -779,12 +1148,9 @@
         });
       }
 
-      /* 所有者 id 是 34 位的串（`ou_` + 32 hex），原样打进设置页会把那一行撑开、
-         把真正的信息（到底转给谁了）挤没。缩成 前 8 + 后 4。 */
-      function shortId(v) {
-        var s = trim(v);
-        return s.length > 14 ? (s.slice(0, 8) + "\u2026" + s.slice(-4)) : s;
-      }
+      /* 所有者 id 缩成 前 8 + 后 4 —— 实现搬到了顶层 `shortId`（v0.37.0）。
+         认人的提示语现在多处要用它，抄成两份的话，漂移的症状是
+         「设置页缩了、toast 里没缩」。 */
 
       return ensureTable(cfg, b.appToken, cfg.tableId, TASK_TABLE_NAME, TEAM_SCHEMA)
         .then(function (r) {
@@ -1011,7 +1377,7 @@
 
   var api = {
     CFK: CFK, ITK: ITK, PEND: PEND, LOGK: LOGK,
-    TF: TF, TEAM_SCHEMA: TEAM_SCHEMA,
+    TF: TF, TF_REQ: TF_REQ, TF_LEGACY: TF_LEGACY, TEAM_SCHEMA: TEAM_SCHEMA,
     PTF: PTF, PEOPLE_SCHEMA: PEOPLE_SCHEMA, ROLE_ME: ROLE_ME, ROLE_MEMBER: ROLE_MEMBER,
     TASK_TABLE_NAME: TASK_TABLE_NAME, PEOPLE_TABLE_NAME: PEOPLE_TABLE_NAME,
     WINDOW_H: WINDOW_H, WINDOW_MAX: WINDOW_MAX,
@@ -1027,6 +1393,9 @@
     fromPeopleRecords: fromPeopleRecords,
     listPeople: listPeople,
     applyPeople: applyPeople,
+    /* ★ v0.37.0 认人：派发 / 转归属 / 设置页三条路共用这一个实现 */
+    resolveMe: resolveMe,
+    looksPlaceholder: looksPlaceholder,
     toTeamFields: toTeamFields,
     fromTeamFields: fromTeamFields,
     mineOnly: mineOnly,
@@ -1048,7 +1417,11 @@
     provision: provision,
     ensureTable: ensureTable,
     todayStr: todayStr,
-    uid: uid
+    uid: uid,
+    /* ★ v0.38.0：派发人（「我是谁」）的**唯一口径** —— 名字优先、open_id 兜底。
+       导出它是为了让**界面**别自己再算一遍：popup / 设置页各有入口，
+       各写一份「有名字用名字、没有用 id」就是三次机会漂开。 */
+    whoOf: whoOf
   };
 
   root.Inbox = api;

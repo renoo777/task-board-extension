@@ -1217,6 +1217,13 @@ body{
             <button class="btn sm" id="tmTry">现在试一条</button>
             <span class="sub" id="tmTryHint"></span>
           </div>
+          <!-- ★ v0.37.0「我是谁」：派发人这一列写的是**名字**，而名字从哪来
+               以前在界面上完全看不见 —— 认成了别人、或者只认到一个占位名
+               （飞书给的 `用户613803` 这种），屏幕上都没有任何痕迹。
+               一行字把它摆出来：认的是谁、从哪认的、可不可信。 -->
+          <div class="row wrap wact">
+            <span class="sub" id="tmWho"></span>
+          </div>
         </div>
 
         <div class="row wrap wact">
@@ -1663,7 +1670,7 @@ body{
              真正的版本号由 manage.js 从 manifest 读出来覆盖 ——
              写死在 HTML 里等于第二个版本号出处，manifest 一升版这里就开始说谎，
              而且没有任何症状。 -->
-        <div class="ab-ver"><span id="abVer">v0.36.1</span></div>
+        <div class="ab-ver"><span id="abVer">v0.38.2</span></div>
       </div>
     </section>
 

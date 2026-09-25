@@ -1850,6 +1850,7 @@ function aiBind(){
       var repEl = document.getElementById("tmReport");
       var tryHint = document.getElementById("tmTryHint");
       var nowHint = document.getElementById("tmNowHint");
+      var whoEl = document.getElementById("tmWho");
       var makeHint = document.getElementById("tmMakeHint");
       var arcEl = document.getElementById("tmArc");
 
@@ -2020,6 +2021,48 @@ function aiBind(){
         /* ★ v0.35.0：存档里那条「当前」标记跟着配置走 ——
            用「用这张」切了表之后必须重绘，否则竖条还留在旧那行上。 */
         paintArc();
+        paintWho();
+      }
+
+      /* 「我是谁」这一行（v0.37.0）。
+         ★★ 为什么非有不可：派发人那一列写的是**名字**，而这个名字从哪来，
+           界面上以前完全看不见 —— 认成了别人、或者只认到一个飞书给的占位名
+           （实测见过 `用户613803` 这种），屏幕上一点痕迹都没有，
+           而它会被**静默**写进团队表的「我是谁」列，之后所有派发都带着它。
+           这一行就是「一眼能看出认的是谁、从哪认的、可不可信」。
+         ★ 认人**不在这里做**：认人可能往组员表补一行，那是**写远端数据**的动作，
+           放在用户主动按下去的按钮里（「测试连接」/「一键生成」/ 打开派发）才可预期；
+           这里只显示**上一次认到的结果**。 */
+      function paintWho(){
+        if (!whoEl) return;
+        /* ★★★ v0.38.0：用 `Inbox.whoOf` 这**一个口径**（真名 → open_id → 占位名）。
+           popup 那边也用它 —— 各写一份「有名字用名字、没有用 id」就是三次
+           机会漂开，而漂开的症状是「设置页说认出来了、派发还说你没认出来」。
+           ★ 判据也跟着变：以前只要 `cfg.me` 空就说「还没认出来」，
+             而 `me` 空恰恰是**常态**（飞书不给名字）—— 于是认人明明成功、
+             设置页却写着「还没认出来」，把人往错方向指。 */
+        var who = (typeof Inbox !== "undefined" && Inbox.whoOf)
+          ? Inbox.whoOf(cfg) : String(cfg.me || "").trim();
+        var src = String(cfg.meSrc || "").trim();
+        if (!who) {
+          var why = String(cfg.meWhy || "").trim();
+          whoEl.textContent = "派发人（我是谁）：还没认出来"
+            + (why ? " —— " + why : " —— 点一下「测试连接」会顺手认一次");
+          return;
+        }
+        var t = "派发人（我是谁）：" + who + (src ? "（从「" + src + "」认出来的）" : "");
+        var me = String(cfg.me || "").trim();
+        if (cfg.meSuspect) {
+          /* 占位名（`用户613803`）在这条链上**不算名字** —— 于是派发人用的是
+             open_id。这个区别必须说清楚：用户看到那串 `ou_…` 会以为坏了。 */
+          t += (me && me !== who)
+            ? "　⚠️ 组员表里解析出来的是占位名「" + me + "」，不是真名，"
+              + "所以派发人用的是你的账号 ID。想让它显示真名：在「组员」表里"
+              + "你自己那行的「姓名」列填一次，填完永久生效"
+            : "　⚠️ 这看着像飞书给的占位名，不是真名。想改：在「组员」表里你自己那行的"
+              + "「姓名」列填一次，填完永久生效";
+        }
+        whoEl.textContent = t;
       }
 
       onBox.addEventListener("change", function(){
@@ -2074,7 +2117,52 @@ function aiBind(){
                于是「表里缺列」这种**连接明明是通的**情况被归进「连不上」，
                还把唯一有用的信息丢在半路，只剩「未知原因」。
                现在三态：通了 / 通了但这张表不能用 / 真连不上。 */
-            if (res && res.ok) { say(repEl, "连上了：" + (res.detail || "")); return; }
+            if (res && res.ok) {
+              say(repEl, "连上了：" + (res.detail || ""));
+              /* ★ v0.37.0：通了之后**顺手认一次人**（这就是 PRD 里「设置页点测试」
+                 那个触发点）。连不通就没必要认 —— 认人也要走同一套凭据。
+                 ★ 认人**会往组员表补一行「本人」**（幂等：已有就不写），
+                   所以它只在用户主动按下的按钮里发生，不做后台轮询。
+                 ★ 结果落盘 + 重绘：不落盘的话下次打开又得重认；
+                   不重绘的话屏幕上还是旧的（异步读回来的东西必须补绘一次）。 */
+              return Inbox.resolveMe(full).then(function (r) {
+                /* ★★★ v0.38.0：判据从「有没有**名字**」改成「有没有**身份**」。
+                   `whoOf` 的口径是 真名 → open_id → 占位名，而**名字恰恰是
+                   飞书唯一不肯给的那一格**（字段级管控）—— open_id 零配置就有。
+                   原来这里是 `if (!r || !r.me) return null;`：于是
+                   「认出了账号、只是飞书没给名字」被当成「认不出」而**静默**
+                   什么都不做，界面上只留下那句「连上了」。
+                   老大报的正是这一幕：**连接成功 + 派发仍说缺派发人**。 */
+                if (!r || !(r.me || r.meId)) {
+                  say(repEl, "连上了：" + (res.detail || "")
+                     + "　但没认出你是谁：" + ((r && r.why) || "未知原因"));
+                  return null;
+                }
+                var patch = {
+                  me: r.me || "", meSrc: r.src || "", meSuspect: !!r.suspect,
+                  /* ★ 没走到名字时把原因留下（只写内存的话关掉页面就没了）。 */
+                  meWhy: r.me ? "" : (r.why || "")
+                };
+                if (r.meId) patch.meId = r.meId;
+                return tmKeep(patch).then(function () {
+                  paintWho();
+                  /* ★ 认到了 id、只是没名字 —— 这是**可用**状态，必须说出来，
+                     否则用户看到「派发人」那行显示一串 ou_… 会以为是坏了。 */
+                  if (!r.me) {
+                    say(repEl, "连上了：" + (res.detail || "")
+                       + "　认到你的是账号（" + String(r.meId).slice(0, 8) + "…），"
+                       + "飞书没给名字" + (r.why ? "：" + r.why : "")
+                       + "　派发照常可用（派发人会写这个账号）");
+                  }
+                });
+              }).catch(function (e) {
+                /* ★★★ 认人这一步炸了**必须出声**。原来这里是
+                   `.catch(function () { return null; })` —— 静默吞掉，
+                   界面上只剩「连上了」，而「认人失败了」这件事完全看不见。 */
+                say(repEl, "连上了，但认人这一步失败了：" + ((e && e.message) || "未知原因"));
+                return null;
+              });
+            }
             if (res && res.stage === "fields") {
               say(repEl, "连上了，但这张表还不能用：" + (res.reason || "列不齐"));
               return;

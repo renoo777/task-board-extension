@@ -935,6 +935,11 @@
      ★★ 这条隔离是硬的不变量，不是「暂时这么写」。 */
   var inboxItems = [];
   var inboxCfg = null;
+  /* 上次认人为什么没认出来（v0.37.0）。★ 必须留一份「原因」：
+     认人失败时 `cfg.me` 是空的，而界面上原来只会说「先认一下你是谁」——
+     真实原因（读不到组员表 / 写不进去 / 飞书没给名字）全被
+     `refreshPeople` 结尾那个光秃的 catch 吃掉了（v0.36.1 的铁律：失败要说得出原因）。 */
+  var meWhy = "";
   var inboxOpen = false;
   var inboxTimer = null;
   /* 抽屉里「派发给」当前选中的人。空串 = 不派给任何人。 */
@@ -1246,16 +1251,65 @@
        点一下就现拉，比等他去设置页按「现在拉一次」靠谱得多。
      ★ **永不 reject**：调用方只关心「现在手上有没有名单」。拉不到就用旧的 ——
        一次网络抖动不该让整个入口点不动（跟 fromPeopleRecords 那条同一个理由）。 */
+  /* 拉名单 **+ 认人**（v0.37.0 合成一次读）。
+     ★★ 为什么把认人放进来：这里是「按项目派发」那条路的入口，而派发必须先知道
+       「我是谁」。v0.36.0 那套认人关在「一键生成」里、是个局部函数，
+       派发这条路够不着 —— 老大原话那句「现在提示缺少派发人」就是这么来的。
+     ★★ 认人**会往组员表补一行**（幂等，已有就不写）。放在这里是刻意的：
+       认人发生在**用户主动动作**里（打开派发 / 点一键生成 / 点设置页的测试），
+       而不是后台轮询 —— 「扩展写了你的表」这件事必须是可预期的。
+     ★ 认完落盘：不落盘的话，下一次打开弹窗又得重认一遍。 */
   function refreshPeople(){
-    if (typeof Inbox === "undefined" || typeof Sync === "undefined") return Promise.resolve();
+    if (typeof Inbox === "undefined" || typeof Sync === "undefined") {
+      meWhy = "扩展没加载全（Inbox / Sync 有一个没起来）";
+      return Promise.resolve();
+    }
     return Sync.readCfg().then(function(sc){
       var full = Inbox.withCred(inboxCfg, sc);
-      if (!Inbox.ready(full) || !full.peopleTableId) return null;
-      return Inbox.listPeople(full).then(function(got){
+      /* ★★★ v0.38.0：这两个短路原本**一个字都不说**，而它们恰恰是最常见的
+         两种「认不出人」：
+           ① 团队派发没配好（缺应用凭据 / 团队表 ID）—— 凭据是从「飞书同步」
+              那边借来的（`withCred`），同步那边一改，这边就跟着失效；
+           ② 还没配「组员」表。
+         不说的话，界面上只剩一句笼统的「先认一下你是谁」—— 而它把用户
+         **指向了错误的方向**（去组员表里标「本人」）。老大这次就是被它带偏的：
+         他真正的现场是「组员表配了、就是没认出人」。
+         ⇒ 沉默的兜底改掉：每种短路都留下一句**能照做**的原因。 */
+      if (!Inbox.ready(full) || !full.peopleTableId) {
+        meWhy = !Inbox.ready(full)
+          ? "团队派发还没配好（缺应用凭据或团队表 ID）"
+          : "还没配「组员」表";
+        return null;
+      }
+      return Inbox.resolveMe(full).then(function(got){
         inboxCfg = Inbox.applyPeople(inboxCfg, got);
+        /* ★ 来源与「这个名字可疑」都要留下来：设置页要显示「认的是谁、从哪认的」，
+           而**占位名**（`用户613803` 那种）必须让人一眼看见 ——
+           它是一条合法的非空字符串，当成正常名字用掉是不会报任何错的。 */
+        if (got && got.src) inboxCfg.meSrc = got.src;
+        inboxCfg.meSuspect = !!(got && got.suspect);
+        if (got && got.meId) inboxCfg.meId = got.meId;
+        /* ★★ v0.38.0：「名字」与「id」分开算 —— 拿到 id 只是没名字，
+           那是**可接受的**（派发照走，派发人写 id，见 Inbox.whoOf）；
+           只有两样都没拿到才算真失败。原来这里按 `!got.me` 判，
+           于是「飞书没给名字」被当成「认不出你是谁」，派发跟着一起停。 */
+        meWhy = (got && got.why && !(got.me || got.meId)) ? got.why : "";
+        inboxCfg.meWhy = meWhy;
         return Inbox.saveCfg(inboxCfg);
       });
-    }).catch(function(){ return null; });
+    }).catch(function(e){
+      /* ★★ 原来是 `.catch(function(){ return null; })` —— 整条链静默吞异常。
+         认人失败就一点痕迹都不留：界面上只会说「先认一下你是谁」，
+         而真因（读不到表 / 写不进去 / 飞书没给名字）全被吃掉。 */
+      meWhy = (e && e.message) || "认人失败";
+      /* ★★ v0.38.0：原因**落盘**。只写内存的话关掉弹窗就没了 ——
+         下一次只剩那句笼统的提示，真因再也拿不回来。 */
+      if (inboxCfg) {
+        inboxCfg.meWhy = meWhy;
+        return Inbox.saveCfg(inboxCfg).catch(function(){ return null; });
+      }
+      return null;
+    });
   }
 
   /* 点项目行上的派发按钮。两步：先拉名单，再弹选人。 */
@@ -1274,10 +1328,17 @@
         return;
       }
       /* 派发要写「我是谁」那一列（团队表里谁是派发人），所以先得有「我」。
-         它是组员表里标「本人」那行 —— 没标的话这一步必然失败，
-         与其让飞书报个看不懂的错，不如在这儿说清楚。 */
-      if (!(inboxCfg && inboxCfg.me)) {
-        toast("先认一下你是谁：在「组员」表里给自己那行把身份选成「本人」");
+         ★★★ v0.38.0：判据从「有没有**名字**」改成「有没有**身份**」
+           （`Inbox.whoOf` = 真名 → open_id → 占位名）。
+           这一格是本功能的命门：飞书对姓名做了字段级管控，
+           **名字是它唯一不肯给的那个字段**，而 open_id 零配置就有
+           （应用所有者）。把判据挂在名字上，等于「飞书给不给名字」
+           决定你能不能派活 —— 老大那句「派发人不需要去填写，默认 = 飞书 openid」
+           说的就是这个。还空着就是**真认不出来**（连应用所有者也查不到），
+           那就把 `meWhy`（真因）说出来，而不是甩一句笼统的话。 */
+      if (!(typeof Inbox !== "undefined" && Inbox.whoOf(inboxCfg))) {
+        toast(meWhy ? ("还没认出你是谁：" + meWhy)
+                    : "还没认出你是谁：去设置页点一下「测试连接」会顺手认一次");
         return;
       }
       toggleSelPop(anchor, names, "", function(who){ runProjDispatch(proj, who); });
