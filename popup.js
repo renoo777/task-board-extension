@@ -979,6 +979,19 @@
          ★ 只在「按项目」视图下重绘：别的视图里 `.prow` 根本不存在，
            这次 render() 是纯浪费（而且它会重建整列 DOM，会打断正在进行的拖拽）。 */
       if (st.view === "project") render();
+      /* ★★★ v0.38.3：名单**不能只等后台轮询**。抽屉里那个派发下拉读的就是
+         `cfg.people` 这份本地缓存，缓存空的时候它是灰的 ——
+         实测老大的现场正是 `people:""` / `peopleAt:0`（收件轮询从没启动过，
+         见 background.js 的 ensureInboxAlarm）。
+         后台那条轮询这一版接通了，但它 1 分钟才一轮；刚装好、刚在飞书里改完
+         组员表、或者扩展刚被唤醒的那一刻，下拉还是会先灰一次。
+         ⇒ 补一条**按需拉取**：开着团队派发、而名单是空的，现在就去拉；
+           拉完补绘抽屉（「异步读完必须补绘」是本项目栽过好几次的那条）。 */
+      if (inboxCfg && inboxCfg.on && !assignNames().length) {
+        refreshPeople().then(function () {
+          if (drawerOpen) buildDAssign();
+        });
+      }
     });
   }
 
@@ -1099,6 +1112,10 @@
   }
 
   /* ---------- 抽屉里的「派发给」 ---------- */
+  /* 名单为空时**唯一**那句话（v0.38.3）。抽成常量是为了让「抽屉里的下拉」和
+     「项目行上的按钮」说的**一字不差** —— 同一个现场用两句话，用户会以为是两回事。 */
+  var NO_PEOPLE_HINT = "组员表里还没有人：去飞书打开「组员」表添几行（姓名 + 成员 + 身份）";
+
   function assignNames(){
     if (typeof Inbox === "undefined" || !inboxCfg) return [];
     var me = inboxCfg.me || "";
@@ -1141,7 +1158,13 @@
        而它其实一条都没发。 */
     onBox.checked = enabled && !!cur;
     btn.hidden = !onBox.checked;
-    btn.disabled = !names.length;
+    /* ★★★ v0.38.3：这里原来是 `btn.disabled = !names.length` —— 撤掉。
+       原因：**disabled 的 <button> 连 click 都不派发**，于是「名单还没拉下来」
+       这件事在界面上只剩一个灰块：点它毫无反应、也没有第二句话 ——
+       老大报的「这里还是灰色的」就是它（实测他的现场是 `people:""`，
+       根本原因是收件轮询从没启动，见 background.js 的 ensureInboxAlarm）。
+       ★ 改成跟项目行那颗按钮**同一条规矩**（见 openProjDispatch 那段）：
+         动作按钮不灰着，名单为空时让它能按，按了就说一句能照做的话。 */
     paintDAssign();
 
     function pick(v){ dAssignTo = v; paintDAssign(); dTouch(); }
@@ -1152,12 +1175,15 @@
       btn.hidden = !onBox.checked;
       paintDAssign();
       dTouch();
+      if (!onBox.checked) return;
       /* 勾上就顺手把下拉弹开：老大要走的是「选中 → 选人」两步，
          不弹的话勾完还得自己去找那个按钮。 */
-      if (onBox.checked && names.length) toggleSelPop(btn, names, dAssignTo, pick);
+      if (names.length) { toggleSelPop(btn, names, dAssignTo, pick); return; }
+      /* ★ 勾上了、却没人可选 —— 这一声必须有（同一个现场跟项目行说同一句话） */
+      toast(NO_PEOPLE_HINT);
     };
     btn.onclick = function () {
-      if (btn.disabled) return;
+      if (!names.length) { toast(NO_PEOPLE_HINT); return; }
       toggleSelPop(btn, names, dAssignTo, pick);
     };
   }
@@ -1324,7 +1350,7 @@
          灰着看得见状态；而项目行上的按钮是个**动作**，灰着按不动又不说为什么，
          人只会觉得点坏了。toast 是动作反馈，不是界面上的解释文字。 */
       if (!names.length) {
-        toast("组员表里还没有人：去飞书打开「组员」表添几行（姓名 + 成员 + 身份）");
+        toast(NO_PEOPLE_HINT);
         return;
       }
       /* 派发要写「我是谁」那一列（团队表里谁是派发人），所以先得有「我」。
@@ -3376,6 +3402,10 @@
         inboxCfg = Inbox.readCfg(changes[Inbox.CFK].newValue);
         renderInbox();
         if (st.view === "project") render();
+        /* ★ v0.38.3：名单和「我是谁」是**后台轮询**写进来的，而用户很可能正开着
+           抽屉 —— 不补这一下，他得先收起抽屉再打开才看得见下拉活过来，
+           然后就会觉得「还是灰的」。 */
+        if (drawerOpen) buildDAssign();
       }
     });
   }

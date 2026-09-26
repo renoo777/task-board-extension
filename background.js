@@ -85,6 +85,9 @@ chrome.runtime.onInstalled.addListener(function (details) {
   updateBadge();
   ensureSyncAlarm();
   ensureNotifyAlarm();
+  /* ★ v0.38.3：这里原本漏了收件的那个 —— 上面两个都挂了，唯独 inbox 没有，
+     而它正是「派发下拉恒灰」与「收不到别人派的活」的唯一原因。 */
+  ensureInboxAlarm();
 });
 
 chrome.contextMenus.onClicked.addListener(function (info, tab) {
@@ -186,6 +189,9 @@ function armSoon() {
 
 chrome.runtime.onStartup.addListener(function () {
   updateBadge();
+  /* ★ v0.38.3：浏览器重启也要确保收件的 tick 在 —— onInstalled 只在装/升级时响，
+     而 alarm 会随浏览器重启丢掉（或者被系统清掉）。 */
+  ensureInboxAlarm();
 });
 
 /* ---------- 飞书同步调度 ----------
@@ -295,9 +301,32 @@ function applyNudge() {
    ★★ 为什么**不**在收到新任务的瞬间发通知，而是走 1 分钟的轮询：
       扩展不是服务端，飞书的变更事件订阅要公网回调地址或长连接服务端，
       这条路上没有。轮询是纯客户端唯一能做的事（见 INBOX_TICK 那条注释）。 */
+/* ★★★ v0.38.3：这个函数从 v0.32.0 被写出来那天起**只有定义、没有任何调用点**
+   —— 于是整个「收件」那条链一次都没跑过：
+     · alarm 从没被创建（`onInstalled` 只挂了 sync / notify 两个）；
+     · `onAlarm` 的分发里也没有 INBOX_TICK 这一支。
+   两个断点都是**零报错**的，而症状看起来毫不相干：
+     ① 抽屉里的「派发」下拉**恒灰** —— 它读的是本地缓存 `cfg.people`，
+        而那份缓存的唯一写入者是轮询（实测现场：`people:""`、`peopleAt:0`）；
+     ② 别人派给你的任务**一条都收不到** —— 收件端就是靠这个 tick 在拉。
+   ★ 所以这里不光要 create，还要**确认它真的在**（重载扩展不保证触发 onInstalled，
+     而 alarm 是持久的 —— 没有就别客气，补一个）。 */
 function ensureInboxAlarm() {
   if (!chrome.alarms) return;
-  chrome.alarms.create(INBOX_TICK, { periodInMinutes: 1 });
+  /* ★★★ 这个函数**在顶层也会被调用**（service worker 每次唤醒都跑一遍顶层代码）——
+     所以它**一个异常都不能抛**：抛出去就是 background.js 加载失败、扩展整体失灵，
+     而症状只会是「装了但什么都不工作」，极难查。
+     ★ 为什么用 `get` 先问一句、而不是无条件 create：同名 create 会把周期
+       **重新计时**，而顶层每次唤醒都会跑 —— 用户频繁操作扩展时，
+       收件轮询会被一次次推迟、甚至一直不触发（而它看起来只是「没反应」）。
+     ★ 为什么 `get` 可能不存在：它是比较新的 API，测试桩和裁剪过的 Chromium
+       分支都未必有。**宁可这次不补，也不能让顶层崩掉** ——
+       v0.38.3 开发期真栽过：`chrome.alarms.get is not a function` 从顶层抛出，
+       整个 `_test_background.js` 当场挂掉（连一行汇总都没有）。 */
+  if (typeof chrome.alarms.get !== "function") return;
+  chrome.alarms.get(INBOX_TICK, function (a) {
+    if (!a) chrome.alarms.create(INBOX_TICK, { periodInMinutes: 1 });
+  });
 }
 
 var INBOX_NID = "taskboard-inbox";
@@ -461,6 +490,11 @@ if (chrome.alarms && chrome.alarms.onAlarm) {
        一声不响，而且正好是**最需要这个功能的那部分用户**（他们连飞书都没配，
        更不会去看控制台）。这类「guard 吃掉下游」本项目栽过好几次了。 */
     if (a.name === NOTIFY_TICK) { notifyTick(); return; }
+    /* ★★★ v0.38.3：收件的 tick 必须也排在 `typeof Sync` 那句 guard **之前** ——
+       理由跟上面 NOTIFY_TICK 那条**一模一样**：那句 return 会把后面整段吃掉。
+       收件跟飞书「同步」是两套配置（inbox 自己借凭据、自己判 ready），
+       排在它后面等于「没配同步的用户永远收不到别人派的活」。 */
+    if (a.name === INBOX_TICK) { inboxTick(); return; }
     if (typeof Sync === "undefined") return;
     if (a.name === SYNC_SOON) {
       Sync.readCfg().then(function (cfg) {
@@ -474,6 +508,16 @@ if (chrome.alarms && chrome.alarms.onAlarm) {
     });
   });
 }
+
+/* ★★★ v0.38.3 顶层兜底：service worker 每次被唤醒都会跑一遍顶层代码，
+   而 alarm 本身是持久的（已经在了就 get 一下、什么都不做）。
+   它覆盖的是那条**边角但真实**的路径：扩展被重载，而 onInstalled 没触发 ——
+   `reload unpacked` 不保证发 onInstalled。那一次如果不补，收件链要等到
+   下一次浏览器重启才恢复，用户看到的却是「派发下拉又变回灰的」。
+   ★ 为什么不像 sync / notify 那样只挂在 onInstalled 里就够：
+     那两个在它们各自的设置页里还有一条「立即同步 / 试一次」的手动路径兜着，
+     收件的名单缓存**没有任何手动入口**（抽屉里的下拉只读缓存）。 */
+ensureInboxAlarm();
 
 /* ---------- 给 popup / manage 页的消息接口 ---------- */
 if (chrome.runtime.onMessage) {
