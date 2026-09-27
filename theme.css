@@ -87,6 +87,12 @@
      · --dot-halo 是「声波环」：7px 红点在小卡片上只是一粒颜色，
        套一圈才读得出「响铃」这个动作。 */
   --dot-due:#c07a4a; --dot-late:#c04a5e; --dot-halo:rgba(192,74,94,.20);
+  /* ★ v0.39.0：「没派出去」徽标与失败原因的**文字**色。
+     ★ 为什么不复用 --dot-due：点色和文字色不是同一件事（见上面那条注）——
+       7px 的点要醒目、10px 的字要读得清，两者对对比度的要求正相反。
+     ★ 它是 .card 上**常驻**规则的 color，所以必须走变量（写死 hex 的话
+       暗色下不跟着切 —— 这正是 popup 那条门抓到的）。 */
+  --fail-ink:#b26a3a;
   --blue-bg:rgba(238,243,255,.85); --blue-bg-hover:rgba(227,234,255,.95); --blue-ink:#3d5aa8;
 
   /* 优先级三档的「亮度」（v0.18.0 修：从 popup.html 的 :root 搬过来）。
@@ -365,6 +371,9 @@ html[data-theme="dark"]{
   /* 状态点两档也各要提亮一档才压得住暗底 —— 深色底会把 --dot-late 那种偏暗的红吃掉，
      量出来只剩一团糊。★ 别只改一个：两态齐全（本仓库栽过「只守亮色那份」）。 */
   --dot-due:#d9a05c; --dot-late:#e0758a; --dot-halo:rgba(224,117,138,.26);
+  /* 「没派出去」的文字色：暗底上要提亮一档，否则 10px 的暖橙字会陷进背景里
+     （和 --dot-* 同一个理由，但它是文字、所以提得更亮一点）。 */
+  --fail-ink:#e0a06a;
   --blue-bg:rgba(96,128,210,.20); --blue-bg-hover:rgba(96,128,210,.30); --blue-ink:#a6bcf5;
 }
 
@@ -462,6 +471,7 @@ html[data-theme="dark"] .tsw-kn .tsw-kmoon{opacity:1;transform:none}
 @property --danger{syntax:'<color>';inherits:true;initial-value:#e08a95}
 @property --danger-bg{syntax:'<color>';inherits:true;initial-value:rgba(253,241,243,.95)}
 @property --dot-due{syntax:'<color>';inherits:true;initial-value:#c07a4a}
+@property --fail-ink{syntax:'<color>';inherits:true;initial-value:#b26a3a}
 @property --dot-halo{syntax:'<color>';inherits:true;initial-value:rgba(192,74,94,.20)}
 @property --dot-late{syntax:'<color>';inherits:true;initial-value:#c04a5e}
 @property --field{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.58)}
@@ -532,6 +542,7 @@ html[data-theme="dark"] .tsw-kn .tsw-kmoon{opacity:1;transform:none}
     --dot-due .34s linear,
     --dot-halo .34s linear,
     --dot-late .34s linear,
+    --fail-ink .34s linear,
     --field .34s linear,
     --field-solid .34s linear,
     --glass .34s linear,

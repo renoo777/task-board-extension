@@ -842,6 +842,10 @@
     });
 
     renderHold(holds);
+    /* ★ v0.39.0：底栏那个「我派的 N」跟着一起更新。
+       ★ 计数**只看 `st.tasks`**、与当前视图/搜索无关 —— 它回答的是
+         「我交出去了多少活」，不是「这一屏筛选出了几条」。 */
+    renderOutbox();
 
     var hits = buckets.todo.length + buckets.doing.length + buckets.done.length + holds.length;
     var hc = document.getElementById("hitCount");
@@ -942,6 +946,14 @@
   var meWhy = "";
   var inboxOpen = false;
   var inboxTimer = null;
+  /* ★ v0.39.0：「我派出去的」——与收件箱**并列**的第二个方向。
+     在此之前这个弹窗只有一扇单向的门（收件箱），派出去的活除了抽屉里那句
+     「已派给 X」之外没有任何落点（PRD §7.4 ②）。 */
+  var outOpen = false;
+  var outTimer = null;
+  /* 后台轮询写下的回读快照（`Inbox.OUTK`）。★ popup **只读它、不写它** ——
+     写入者是后台那趟轮询，两个写入者会互相覆盖（见 inbox.js 的 OUTK 注释）。 */
+  var outRows = [];
   /* 抽屉里「派发给」当前选中的人。空串 = 不派给任何人。 */
   var dAssignTo = "";
   /* 项目行派发的重入闸门（v0.36.0）：点一下要先去拉组员表，
@@ -954,7 +966,7 @@
 
   function loadInbox(){
     if (typeof Inbox === "undefined") return Promise.resolve();
-    return Promise.all([Store.get(Inbox.CFK), Store.get(Inbox.ITK)]).then(function (r) {
+    return Promise.all([Store.get(Inbox.CFK), Store.get(Inbox.ITK), Store.get(Inbox.OUTK)]).then(function (r) {
       /* ★★★ v0.34.0 修：`Store.get(key)` 的返回值**就是那个 key 对应的值**
          （它内部已经 `return o[key]` 了），所以**不能再按 key 索引一次** ——
          `r[0][Inbox.CFK]` 恒为 undefined，`readCfg(undefined)` 拿到的是**全默认值**，
@@ -968,6 +980,17 @@
       inboxCfg = Inbox.readCfg(r[0]);
       inboxItems = Array.isArray(r[1]) ? r[1] : [];
       renderInbox();
+      /* ★★★ v0.39.0：把「我派出去的那些」的回读结果并回本地任务。
+         ★ 为什么就在这一个地方做：抽屉里的徽标与发件箱列表**都从 `t.assign` 读**，
+           所以两边天然同一个口径（PRD §7.4 ③ 的验收：两处显示的状态必须一致，
+           **不许各算一遍**）。而合并只发生在 popup —— 任务数组的唯一写入者。
+         ★ 只有真变了才落盘 + 重绘：否则每开一次弹窗都会白写一次盘、白重绘一次。 */
+      var o = r[2];
+      outRows = (o && Array.isArray(o.rows)) ? o.rows : [];
+      if (outRows.length) {
+        var mg = Inbox.applyOutbox(st.tasks, outRows);
+        if (mg.changed) save().then(render);
+      }
       /* ★★★ v0.36.0：配置读完必须**重绘一次看板**。
          为什么：项目行上那颗派发按钮的存在与否取决于 `inboxCfg.on`，而
          `inboxCfg` 是**异步**读回来的 —— 首帧那次 render() 跑在它之前，
@@ -1099,15 +1122,184 @@
     if (!el) return;
     clearTimeout(inboxTimer);
     if (open) {
-      /* 互斥：三个浮层盖在同一片区域，同时开只会互相压。 */
+      /* 互斥：几个浮层盖在同一片区域，同时开只会互相压。 */
       setFly(false);
       setArch(false);
+      setOutbox(false);
       renderInboxBody();
       el.hidden = false;
       nextFrame(function () { el.classList.add("show"); });
     } else {
       el.classList.remove("show");
       inboxTimer = setTimeout(function () { if (!inboxOpen) el.hidden = true; }, 200);
+    }
+  }
+
+  /* ============================================================
+     我派出去的（v0.39.0）—— 与收件箱**并列**的第二扇门
+     ============================================================
+     ★★★ 为什么必须有它：在此之前派发是**一条单向的路**。`mineOnly` 只留
+       「接收人 == 我」，派发人从不读取自己派出去的那一行 —— 于是
+       「我派出去几条、分别到哪一步了」这个问题**在界面上无解**
+       （老大原话：「也不确定有没有派发成功，对方有没有接收到，我也不知道」）。
+     ★ 数据来源只有一个：本地任务的 `t.assign`（状态由后台回读灌进来）。
+       这里**绝不另读一次团队表** —— 那就会变成同一件事的第二种口径。 */
+
+  function outItems(){
+    return (st.tasks || []).filter(function (t) {
+      var a = t && t.assign;
+      /* ★ 撤回的**不再出现在这儿**（P0-6）：本地标记为终态，
+         但团队表那一行照旧保留（远程删除不可逆）。 */
+      return !!(a && a.to && a.st !== "revoked");
+    });
+  }
+
+  /* 状态徽标 —— **全项目唯一的画法**（抽屉里那条任务与发件箱里那一行都用它）。
+     ★ 认不出来的状态码**不画**：绝不把裸状态码漏到界面上（P0-4 的验收）。 */
+  function stBadge(a){
+    if (!a || !a.to) return null;
+    /* ★ 状态的推断**只有一处**（`Inbox.assignState`：老数据缺 `st` 时按「已派发」算）——
+       这里再写一遍的话，抽屉那句与徽标就会是两个口径。 */
+    var st = (typeof Inbox !== "undefined") ? Inbox.assignState(a) : (a.st || "recorded");
+    var txt = (typeof Inbox !== "undefined") ? Inbox.stText(st) : "";
+    if (!txt) return null;
+    var b = document.createElement("i");
+    b.className = "astate st-" + st;
+    b.textContent = txt;
+    return b;
+  }
+
+  function renderOutbox(){
+    var btn = document.getElementById("outBtn");
+    if (!btn) return;
+    var n = outItems().length;
+    btn.hidden = n === 0;
+    var n1 = document.getElementById("outN");
+    var n2 = document.getElementById("outFlyN");
+    if (n1) n1.textContent = n;
+    if (n2) n2.textContent = n;
+    if (outOpen) renderOutboxBody();
+  }
+
+  function renderOutboxBody(){
+    var body = document.getElementById("outFlyBody");
+    if (!body) return;
+    body.innerHTML = "";
+    /* 排序：**没走完的在前、最近的在上** —— 排的是「我该关心什么」，
+       不是「我什么时候派的」（已完成的活不该常年顶在最上面）。 */
+    var list = outItems().slice().sort(function (a, b) {
+      var da = ((a.assign || {}).st === "done") ? 1 : 0;
+      var db = ((b.assign || {}).st === "done") ? 1 : 0;
+      if (da !== db) return da - db;
+      return (Number((b.assign || {}).at) || 0) - (Number((a.assign || {}).at) || 0);
+    });
+    if (!list.length) {
+      var e = document.createElement("div");
+      e.className = "holdfly-empty";
+      e.textContent = "你还没派过任务给别人";
+      body.appendChild(e);
+      return;
+    }
+    list.forEach(function (t) { body.appendChild(outCardEl(t)); });
+  }
+
+  /* ★ 与收件箱卡片是**两套**，别合并：那边是「我的活」的完整卡（能就地编辑、能拖），
+     这边是「我交出去的活」的一行 —— 只看状态、只能撤回 / 重派。
+     复用 cardEl 会得到一个**能编辑、能拖动**的假卡，而它改的是我本地这条任务、
+     不是表里那一行 —— 那等于凭空制造误导。 */
+  function outCardEl(t){
+    var a = t.assign || {};
+    var el = document.createElement("article");
+    el.className = "card outcard";
+    el.dataset.outId = t.id || "";
+    if (a.st === "failed") el.classList.add("is-failed");
+
+    var title = document.createElement("div");
+    title.className = "ctitle";
+    title.textContent = t.title || "（没写标题）";
+    el.appendChild(title);
+
+    var meta = document.createElement("div");
+    meta.className = "cmeta";
+    var to = document.createElement("span");
+    to.className = "txt";
+    to.textContent = "派给 " + (a.to || "？");
+    meta.appendChild(to);
+    var bd = stBadge(a);
+    if (bd) meta.appendChild(bd);
+    el.appendChild(meta);
+
+    /* ★ 失败原因必须**留在卡片上**，不是弹一次就没了（P0-5 的验收：
+       那条显示原因 + 一句能照做的话）。 */
+    if (a.st === "failed" && a.why) {
+      var why = document.createElement("div");
+      why.className = "owhy";
+      why.textContent = a.why;
+      el.appendChild(why);
+    }
+
+    var acts = document.createElement("div");
+    acts.className = "oacts";
+    if (a.st === "failed") {
+      var re = document.createElement("button");
+      re.type = "button";
+      re.className = "obtn";
+      re.textContent = "重派一次";
+      re.addEventListener("click", function () { retryDispatch(t); });
+      acts.appendChild(re);
+    }
+    var rv = document.createElement("button");
+    rv.type = "button";
+    rv.className = "obtn";
+    rv.textContent = "撤回";
+    rv.title = "只在本机标记为已撤回；团队表那一行保留（远程删除不可逆）";
+    rv.addEventListener("click", function () { revokeAssign(t.id); });
+    acts.appendChild(rv);
+    el.appendChild(acts);
+    return el;
+  }
+
+  /* 撤回（P0-6）：**只标本地，不删远端那一行** —— 远程删除不可逆，
+     而那一行可能已经被对方看过、引用过（沿用现有 P0 纪律）。 */
+  function revokeAssign(id){
+    var hit = null;
+    (st.tasks || []).forEach(function (t) { if (t && t.id === id) hit = t; });
+    if (!hit || !hit.assign) return;
+    hit.assign.st = "revoked";
+    hit.assign.stAt = Date.now();
+    save().then(function () {
+      render();
+      toast("已撤回（团队表那一行保留着）");
+    });
+  }
+
+  /* 重派：失败那条再走一次同一条路。★ 复用 `runDispatch`，不另写一遍 ——
+     两处各写一份派发逻辑，迟早有一处漏了落账，而漏掉的那一处**零症状**。 */
+  function retryDispatch(t){
+    if (!t || !t.assign || !t.assign.to) return;
+    runDispatch(t, t.assign.to);
+  }
+
+  function setOutbox(open){
+    open = !!open;
+    if (open === outOpen) return;
+    outOpen = open;
+    var el = document.getElementById("outFly");
+    if (!el) return;
+    clearTimeout(outTimer);
+    if (open) {
+      /* 互斥：几个浮层盖在同一片区域，同时开只会互相压。 */
+      setFly(false);
+      setArch(false);
+      setInbox(false);
+      renderOutboxBody();
+      el.hidden = false;
+      nextFrame(function () { el.classList.add("show"); });
+    } else {
+      el.classList.remove("show");
+      /* 等收起动画播完再真正隐藏，否则淡出会被 display:none 掐掉
+         （和 holdFly / inboxFly 同一处理）。 */
+      outTimer = setTimeout(function () { if (!outOpen) el.hidden = true; }, 200);
     }
   }
 
@@ -1198,22 +1390,49 @@
     btn.classList.toggle("selon", !!dAssignTo);
   }
 
-  /* 派发动作。★ 不阻塞保存（fire and forget）：派发要走网络，
-     等它返回再让抽屉保存的话，抽屉会卡在网络上 —— 而本地那条任务是本地的事。
-     失败会 toast 出来（用户点完得知道没派出去）。 */
+  /* 派发动作（v0.39.0 起**落账**）。
+     ★ 不阻塞保存（fire and forget）：派发要走网络，等它返回再让抽屉保存的话，
+       抽屉会卡在网络上 —— 而本地那条任务是本地的事。
+     ★★★ 这一版的三处改动，逐条对应老大那三句话：
+       ① 先落 `sending`，界面上**立刻**出现徽标（不再是一句 2 秒就消失的 toast）；
+       ② 成功时把 `recordId` 与 `recorded` **写进本地那条任务** ——
+          这是回读的锚点（`recordId` 以前拿到就丢，所以那一行永远读不回来）；
+       ③ 失败时把状态与**原因**留在本地（`failed` + `why`）——
+          它不会随 toast 一起消失，发件箱里随时能查。
+     ★ 注意：这里是**覆盖式**赋值。P1 要加 `msgId` 时记得一并列出来 ——
+       覆盖式赋值会把没列出的字段清掉，而那种丢法零报错。 */
   function runDispatch(t, to){
     if (typeof Inbox === "undefined" || typeof Sync === "undefined") return;
+    if (!t) return;
+    var at = Date.now();
+    t.assign = { to: to, at: at, rid: "", st: "sending", stAt: at, why: "" };
+    save().then(render);
     Sync.readCfg().then(function (sc) {
       var full = Inbox.withCred(inboxCfg, sc);
-      if (!Inbox.ready(full)) {
-        toast("派发没配好：去设置页检查一下团队表");
-        return;
-      }
-      return Inbox.dispatch(full, t, to).then(function () {
-        toast("已经派给 " + to);
+      if (!Inbox.ready(full)) throw new Error("团队派发没配好");
+      return Inbox.dispatch(full, t, to).then(function (r) {
+        t.assign = {
+          to: to, at: at,
+          rid: (r && r.recordId) || "",
+          st: "recorded", stAt: Date.now(), why: ""
+        };
+        save().then(function () {
+          render();
+          toast("已派给 " + to + "（状态在「我派的」里看）");
+        });
       });
     }).catch(function (e) {
-      toast("派失败：" + ((e && e.message) || "未知原因"));
+      /* ★ 失败也**落账**：这是本版最重要的一条「留痕」——
+         原来只弹一句 2 秒的话，用户关掉弹窗就再也查不到刚才那次到底怎么了。 */
+      t.assign = {
+        to: to, at: at, rid: "",
+        st: "failed", stAt: Date.now(),
+        why: (typeof Inbox !== "undefined") ? Inbox.failText(e) : "未知原因"
+      };
+      save().then(function () {
+        render();
+        toast("没派出去：" + t.assign.why);
+      });
     });
   }
 
@@ -1485,6 +1704,15 @@
       meta.appendChild(dot); meta.appendChild(nm);
     }
     el.appendChild(meta);
+
+    /* ★ v0.39.0：派出去的任务，卡片上**常年**带着状态徽标 ——
+       这是「一条派出去的活在两处可见、且两处状态一致」的那个「两处」之一
+       （另一处是发件箱；两边都读同一个 `t.assign.st`，所以不可能不一致 ——
+       PRD §7.4 ③ 的验收）。
+       ★ 塞进 meta 行、而不是另起一行：卡片高度是硬约束（窄列 138px），
+         为一个徽标多一行会把每张卡都撑高。 */
+    var asg = stBadge(t.assign);
+    if (asg) meta.appendChild(asg);
 
     /* 命中在备注里时补一行备注片段 —— 否则用户看到一张标题毫无高亮的卡，
        会以为「这功能搜错了」。只在标题没命中时补，避免重复。 */
@@ -2312,7 +2540,15 @@
     /* ★ v0.34.0：派出去的活要**看得见**。它在角标上是被排除的（那是刻意的，
        交出去的活不占「我还有几件没干」），所以抽屉里必须有个地方说清它去哪了 ——
        否则这条任务在本地看起来跟没派过一模一样，你会一遍遍地重新处理它。 */
-    if (t.assign && t.assign.to) parts.push("已派给 " + t.assign.to);
+    /* ★ v0.39.0：抽屉里也要说清「到哪一步了」。光留一句「已派给 X」等于没说 ——
+       那句话在派出去之后**永远不变**，而老大要问的恰恰是「后来怎么样了」。 */
+    if (t.assign && t.assign.to) {
+      var sw = (typeof Inbox !== "undefined")
+        ? Inbox.stText(Inbox.assignState(t.assign)) : "";
+      parts.push("已派给 " + t.assign.to + (sw ? "（" + sw + "）" : ""));
+    }
+    /* 失败原因一直留在抽屉里，直到重派成功把它清掉（P0-5）。 */
+    if (t.assign && t.assign.st === "failed" && t.assign.why) parts.push(t.assign.why);
     if (t.createdAt) parts.push("建于 " + fmtDay(t.createdAt));
     if (t.doneAt)    parts.push("完成于 " + fmtDay(t.doneAt));
     if (t.archived)  parts.push("已归档");
@@ -2699,6 +2935,15 @@
     if (!inboxOpen) return;
     if (e.target.closest("#inboxFly") || e.target.closest("#inboxBtn")) return;
     setInbox(false);
+  });
+
+  /* ★ v0.39.0：发件箱的「点空白收起」。★ 漏掉这一段的症状很别扭 ——
+     浮层点不掉，而用户已经没有别的办法关它（只能点那个 ×），
+     于是整个弹窗看起来像卡住了。 */
+  document.addEventListener("pointerdown", function(e){
+    if (!outOpen) return;
+    if (e.target.closest("#outFly") || e.target.closest("#outBtn")) return;
+    setOutbox(false);
   });
 
   /* 捕获行：回车即建。
@@ -3354,6 +3599,11 @@
         if (ibBtn) ibBtn.addEventListener("click", function(){ setInbox(!inboxOpen); });
         var ibX = document.getElementById("inboxClose");
         if (ibX) ibX.addEventListener("click", function(){ setInbox(false); });
+        /* ★ v0.39.0：「我派的」入口 —— 与收件箱并列的那扇门。 */
+        var obBtn = document.getElementById("outBtn");
+        if (obBtn) obBtn.addEventListener("click", function(){ setOutbox(!outOpen); });
+        var obX = document.getElementById("outClose");
+        if (obX) obX.addEventListener("click", function(){ setOutbox(false); });
 
         var ti = document.getElementById("newTitle");
         if (ti) { try { ti.focus(); } catch(e){} }
@@ -3390,6 +3640,17 @@
         var ni = changes[Inbox.ITK].newValue;
         inboxItems = Array.isArray(ni) ? ni : [];
         renderInbox();
+      }
+      /* ★ v0.39.0：后台回读完「我派出去的那些」→ 当场并进本地任务并重绘。
+         ★ 不接这条的话，用户正开着弹窗时状态不会变（要等下次开弹窗）——
+           而「对方点完成」恰恰是最希望当场看见的事（指标里写的是 ≤1 分钟）。 */
+      if (typeof Inbox !== "undefined" && changes[Inbox.OUTK]) {
+        var ov = changes[Inbox.OUTK].newValue;
+        outRows = (ov && Array.isArray(ov.rows)) ? ov.rows : [];
+        if (outRows.length) {
+          var om = Inbox.applyOutbox(st.tasks, outRows);
+          if (om.changed) save().then(render);
+        }
       }
       /* 设置页改了使用偏好要**立刻**生效 —— 「数据」按钮就在顶栏上，
          一边开着弹窗一边改设置是很常见的一条路径。 */

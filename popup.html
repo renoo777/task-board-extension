@@ -422,6 +422,48 @@ body.dragging-on .holdfly{pointer-events:none}
 .holdfly-body::-webkit-scrollbar{width:6px}
 .holdfly-body::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
 .holdfly-empty{font-size:11px;color:var(--ink4);text-align:center;padding:16px 0}
+/* ---------- 派发状态徽标（v0.39.0）----------
+   ★ 为什么用**文字**而不是色点：状态有七档，靠色相区分在窄列（138px）里
+     根本认不出来；而「已派发 / 已完成 / 没派出去」的差别，恰恰是用户
+     最需要一眼看到的那一件事（老大原话：「也不确定有没有派发成功」）。
+   ★ 尺寸贴着 meta 行（9.5px）：它是附属信息，不该抢标题的注意力。
+   ★ 靠右（margin-left:auto）：同一行里左边是「派给谁」，右边才是状态 ——
+     从左往右读的顺序正好是「给谁 → 到哪一步了」。 */
+.card .cmeta .astate{
+  margin-left:auto;flex:0 0 auto;font-style:normal;
+  display:inline-flex;align-items:center;height:14px;padding:0 5px;
+  border-radius:5px;font-size:9.5px;line-height:1;white-space:nowrap;
+  border:1px solid currentColor;background:rgba(140,148,164,.10);
+  color:var(--ink3);
+}
+.card .cmeta .astate.st-sending{color:var(--s-todo)}
+.card .cmeta .astate.st-recorded,
+.card .cmeta .astate.st-sent,
+.card .cmeta .astate.st-read,
+.card .cmeta .astate.st-ack,
+.card .cmeta .astate.st-doing{color:var(--s-doing)}
+.card .cmeta .astate.st-done{color:var(--s-done)}
+/* 失败用暖色：它是**唯一需要用户动手**的那一档（重派），不能跟普通状态同色。
+   ★ 走变量（`--fail-ink`，亮暗各一套）：写死 hex 的话暗色下不跟着切 ——
+     而这是 .card 上的**常驻**规则，正是那条门抓的形态。 */
+.card .cmeta .astate.st-failed{color:var(--fail-ink)}
+
+/* ---------- 「我派的」里的一行（v0.39.0）----------
+   ★ 与收件箱卡片是两套：那边能就地编辑/拖拽（那是我的活），
+     这边只看状态、只能撤回/重派（那是我交出去的活）。 */
+.card.outcard{padding:9px 10px}
+.card.outcard.is-failed{border-color:rgba(192,122,74,.5)}
+.card.outcard .owhy{
+  margin-top:4px;font-size:10.5px;line-height:1.45;color:var(--fail-ink);
+  word-break:break-word;
+}
+.card.outcard .oacts{display:flex;gap:6px;margin-top:6px}
+.card.outcard .obtn{
+  height:20px;padding:0 8px;border-radius:6px;font-size:10.5px;
+  cursor:pointer;font-family:inherit;color:var(--ink2);
+  border:1px solid var(--line);background:transparent;
+}
+.card.outcard .obtn:hover{background:rgba(140,148,164,.14)}
 /* 派给我的 · 卡片上那个「完成」按钮（v0.32.0）
    ★ 它是 inbox 里唯一允许的动作，所以做成一颗安静的小按钮：
      这条任务的主人不是你，除了「我做完了」你不该改它别的。 */
@@ -1293,6 +1335,24 @@ html[data-theme="dark"] .bar .tsw .tsw-kn{transform:translateX(26px)}
       <div class="holdfly-body" id="inboxFlyBody"></div>
     </div>
 
+    <!-- 我派的（v0.39.0）
+         ★★ 为什么必须有这一扇门：在此之前派发是**一条单向的路** ——
+            `mineOnly` 只留「接收人 == 我」，于是派发人**从不读取自己派出去的那一行**，
+            「我派出去几条、分别到哪一步了」这个问题在界面上无解
+            （老大原话：「也不确定有没有派发成功，对方有没有接收到，我也不知道」）。
+         ★ 与收件箱**并列**（不是替换）：那边是别人交给我的活，这边是我交出去的活。
+         ★ 复用 .holdfly 的样式：同一片浮层区域、同一套毛玻璃材质，
+           为它单开一套 CSS 就是给自己多一份要维护的副本（收件箱当初也是这么做的）。 -->
+    <div class="holdfly" id="outFly" hidden>
+      <div class="holdfly-head">
+        <i class="sdot"></i>
+        <span class="name">我派的</span>
+        <span class="count" id="outFlyN">0</span>
+        <button class="x" id="outClose" title="收起">×</button>
+      </div>
+      <div class="holdfly-body" id="outFlyBody"></div>
+    </div>
+
     <div class="archfly" id="archFly" hidden>
       <div class="archfly-head">
         <i class="sdot"></i>
@@ -1315,6 +1375,11 @@ html[data-theme="dark"] .bar .tsw .tsw-kn{transform:translateX(26px)}
          ★ 复用 .holdfly 的样式：它已经是「从底栏弹出来的一小叠卡片」，
            为了一个新浮层再抄一份 CSS，等于给自己多一份要维护的副本。 -->
     <button class="link act" id="inboxBtn" hidden>派给我 <span id="inboxN">0</span></button>
+    <!-- 我派的（v0.39.0）
+         ★ 与「派给我」**并列**：缺了它，这个弹窗就只有一扇单向的门 ——
+           你交出去的活去了哪里、到哪一步了，界面上问不到。
+         ★ 沿用同一套 .link.act 外观与位置：两个方向、同一个区域、同一种读法。 -->
+    <button class="link act" id="outBtn" hidden>我派的 <span id="outN">0</span></button>
     <div class="spacer"></div>
     <button class="link act" id="archBtn" hidden>归档</button>
     <button class="link" id="clearDone" title="把已完成的收起来：不再占着已完成列，数据仍在本地（可逐条取回）">归档已完成</button>

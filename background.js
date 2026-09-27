@@ -377,6 +377,17 @@ function inboxTick() {
       }).then(function (res) {
         var patch = {};
         patch[Inbox.ITK] = res.items;
+        /* ★★★ v0.39.0：**派出去的那些，回读结果落在这个独立 key 上**。
+           同一趟 `listAll` 已经把全表拿回来了（见 `Inbox.pull`），
+           筛出「我是谁 == 我、接收人 != 我」那几行几乎零成本 ——
+           这就是「派发人回读」的全部实现（PRD §8）。
+           ★ 为什么不顺手写任务数组（`taskboard.v1`）：写那个数组的只有 popup，
+             后台也去整数组读-改写的话，两边并发就会丢更新 —— 而那种丢法**零报错**
+             （后写的覆盖先写的，谁都不知道少了一条任务）。
+             ⇒ 后台只写这个 key，popup 读它再并进自己的数组：两个 key、两个写入者。
+           ★ 空数组也照写：它代表「我最近一次读到的样子」，
+             数量从有到无（对方把行删了）这件事本身也是信息。 */
+        patch[Inbox.OUTK] = { at: Date.now(), rows: res.outbox || [] };
 
         var raw = (o && o[Inbox.PEND]) || {};
         var seen = {

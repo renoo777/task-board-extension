@@ -70,6 +70,27 @@
  *   只有它带 open_id。派发对象本身只要名字就够（文本列也能存），
  *   但「把这表转给本人」「以后给他发飞书消息」都要 open_id ——
  *   文本列做不到，等到需要时再补一个字段，存量数据就得人手重填一遍。
+ *
+ * ============================================================
+ * 六、派发闭环：从「写出去就断了」到「随时答得出三个问题」（v0.39.0）
+ *
+ * 老大原话：「也不确定有没有派发成功，对方有没有接收到，我也不知道。
+ * 整个交互都不够完善，逻辑也不够清晰。」—— 这三句话各自对应一处**真实缺失**：
+ *   · 成功只弹一句 2 秒就消失的 toast，之后不留任何痕迹（`recordId` 拿到就丢）；
+ *   · 「对方收到没」**没有回执链路**（收件侧不回传、派发侧也不回读）；
+ *   · 没有「我派出去的」视图（`mineOnly` 只留「接收人 == 我」）。
+ *
+ * ★★★ 一句话概括：**派发原来是一条单向的路，写出去就断了**。这一版把它接回来：
+ *   `recordId` 落账（`t.assign.rid`）→ 轮询时顺手筛出「我派出去的」
+ *   （`outboxOf`，与 `mineOnly` **并列**）→ 快照落 `OUTK` → popup 按 `rid`
+ *   并回本地 `t.assign.st`（`applyOutbox`，单调递增）。
+ *
+ * ★ 三条不变量（改这块之前先读它们）：
+ *   ① `mineOnly` **一行不改** —— 收件箱条数不许漂移（有判据钉着）；
+ *      `outboxOf` 是并列的第二路，两者互补：同一条记录只可能落在其中一边。
+ *   ② 状态**单调递增**（`laterState`）：两个来源必然不同步，
+ *      让「最新」赢就会出现「已完成 → 待办」这种倒退 —— 倒退比停滞更糟。
+ *   ③ 状态词只有 `ST_TEXT` **一处**；界面**绝不出现英文字母状态码**。
  */
 (function (root) {
   "use strict";
@@ -92,6 +113,14 @@
        只增不减），并进配置会让每次读-改-写都多背一段它管不着的数据。
        自定义形象库（`taskboard.mc.customs`）也是这么分的。 */
   var LOGK = "taskboard.inbox.log";
+  /* 「我派出去的」那一行的**回读快照**（v0.39.0）。
+     ★★ 为什么另开一个 key，而不是让后台顺手改本地任务数组（`taskboard.v1`）：
+       写任务数组的**只有 popup**（用户每次编辑都会整数组读-改写）。
+       后台轮询若也去改写同一个数组，两边并发就会丢更新 ——
+       而那种丢法**零报错**（后写的那份覆盖前一份，谁都不知道少了一条任务）。
+       ⇒ 后台只写这个 key（单一写入者 = 后台），popup 读它、把状态并回自己的
+         任务数组（单一写入者 = popup）。两个 key、两个写入者，不存在竞争。 */
+  var OUTK = "taskboard.inbox.outbox";
 
   /* 团队表字段名。★ 与个人表（feishu.js 的 F）**不是同一套**，别混用。
      ★★ 「接收人 / 派发人」用**单行文本**（type 1）而不是单选：
@@ -120,7 +149,18 @@
     who: "我是谁",
     from: "派发人",
     createdAt: "创建时间",
-    doneAt: "完成时间"
+    doneAt: "完成时间",
+    /* ---------- ★★ v0.39.0：两个**可选新列**（见 `TF_OPT`）----------
+       ★ 为什么叫「可选」：`provision` 给新表会建它们、老表点一次「一键生成」也会补上，
+         但**没有它们功能照常跑**（P0 不读也不写这两列）。
+       ★★★ 为什么绝不能进 `TF_REQ`：那是 v0.38.1 的现场 ——
+         「你的表 10 列一个不缺，却被指去修一个本就不该有的列」。
+         新列若进必检，**所有老表立刻被判「缺列」**，同一个 bug 原地复发。
+         ⇒ 可选新列 = 只进 `TEAM_SCHEMA`（建表）+ `TF`（读写视图），不进必检。
+       ★ `deliver` 的用处：接收人**没装扩展**时，表格是他唯一能看见的界面；
+         `notifyAt` 记飞书消息发出时间（P1 才写）。 */
+    deliver: "送达状态",
+    notifyAt: "通知时间"
   };
 
   /* ---------- ★★★ v0.38.1：把「列」的三种语义拆开 ----------
@@ -141,12 +181,22 @@
      ★ 键名与 `TF` 一一对应（值就是真实列名），这样 `TF_REQ` 能直接算出来。 */
   var TF_LEGACY = { from: 1 };
 
-  /* **必需列** = `TF` 减去兼容列。**判据只有这一处。**
+  /* **可选新列**（v0.39.0）—— 我们会建、会读写，但**缺了不算这张表不可用**。
+     ★★ 为什么另开一个集合、而不是并进 `TF_LEGACY`：
+       `TF_LEGACY` 的语义是「**旧**列名，只用于回退读取」（`from` 那种），
+       这两个是**新**列，语义正相反。并进去的话，将来有人清理老列时会
+       顺手把新列一起删掉 —— 而症状是「对方的状态永远同步不回来」，零报错。
+     ★★★ 为什么它们不进 `TF_REQ`：见上面 v0.38.1 那段。缺了照常用。 */
+  var TF_OPT = { deliver: 1, notifyAt: 1 };
+
+  /* **必需列** = `TF` 减去兼容列、再减去可选新列。**判据只有这一处。**
      ★ 别在别处再抄一份清单、也别再遍历 `TF` 来问「缺不缺列」——
        原来 `background.js` 的 `Object.keys(Inbox.TF)` 就是那个 bug 的现场。 */
   var TF_REQ = (function () {
     var o = {};
-    Object.keys(TF).forEach(function (k) { if (!TF_LEGACY[k]) o[k] = TF[k]; });
+    Object.keys(TF).forEach(function (k) {
+      if (!TF_LEGACY[k] && !TF_OPT[k]) o[k] = TF[k];
+    });
     return o;
   })();
 
@@ -198,6 +248,73 @@
   var PRIORITY_TEXT = { high: "高", mid: "中" };
   var PRIORITY_BACK = { "高": "high", "中": "mid" };
 
+  /* ============================================================
+     派发状态机（v0.39.0）——「我派出去的那条，现在到哪一步了」
+     ============================================================
+     ★★★ 这一整块的由来（老大原话）：「也不确定有没有派发成功，对方有没有接收到，
+       我也不知道。整个交互都不够完善，逻辑也不够清晰。」
+       ⇒ 那三句话各自对应一处**真实缺失**，不是体验问题：
+         · 成功只弹一句 2 秒就消失的 toast，之后不留任何痕迹；
+         · 「对方收到没」**根本没有回执链路**（收件侧不回传、派发侧不回读）；
+         · 没有「我派出去的」视图 —— `mineOnly` 只留「接收人 == 我」，
+           于是**派发人从不读取自己派出去的那一行**，那一行后来变成什么样，
+           这一侧完全不可见。派发是一条单向的路，写出去就断了。
+
+     ★★ 「状态只进不退」（PRD §7.1）：已读不会被「未读」覆盖，已完成不会被回退。
+       为什么不是「以最新为准」：状态有**两个来源**（本地记录 + 对方回写的表格），
+       它们必然不同步；让最新那个赢，就会出现「已完成 → 待办」这种倒退 ——
+       而倒退比停滞更糟：用户会以为活被退回来了。⇒ 单调递增，见 `laterState`。
+
+     ★ 界面文案与状态码**只有这一个映射**（PRD §7.4 ④）——
+       照 v0.38.2 的教训：同一件事有两种口径，迟早给出两个答案。 */
+  var ST_TEXT = {
+    sending:  "派发中",
+    recorded: "已派发",
+    sent:     "已通知",
+    read:     "已读",
+    ack:      "已接收",
+    doing:    "进行中",
+    done:     "已完成",
+    failed:   "没派出去",
+    revoked:  "已撤回"
+  };
+  /* 单调序。★ `failed` / `revoked` **故意不在表里** ——
+     它们不是「路程上的一站」（一个是异常态、一个是本地终态），
+     编进序里的话，「失败后重试成功」会被判成倒退。 */
+  var ST_RANK = { sending: 0, recorded: 1, sent: 2, read: 3, ack: 4, doing: 5, done: 6 };
+
+  /* 状态码 → 界面词。★ 认不出来时返回**空串**（界面据此不画徽标）——
+     绝不把裸状态码漏到界面上（P0-4 的验收：任何位置不出现英文状态码）。 */
+  function stText(st) { return ST_TEXT[trim(st)] || ""; }
+  function stRank(st) {
+    var r = ST_RANK[trim(st)];
+    return (typeof r === "number") ? r : -1;
+  }
+  /* 两个来源的状态，取更靠后的那个（单调递增）。 */
+  function laterState(a, b) {
+    var A = trim(a), B = trim(b);
+    if (!A) return B;
+    if (!B) return A;
+    if (A === B) return A;
+    /* 撤回是本地终态：远端再怎么变都不该把它拽回来。 */
+    if (A === "revoked") return A;
+    if (B === "revoked") return B;
+    /* 失败是异常态：有真实状态可依时以真实状态为准（重试成功就走回正路）。 */
+    if (A === "failed") return B;
+    if (B === "failed") return A;
+    return stRank(B) > stRank(A) ? B : A;
+  }
+  /* 团队表「状态」列的中文 → 我们的状态码。**只有这一个实现**（Q5 口径）：
+     `done` 只认「状态 = 已完成」。★ 不看「完成时间非空」——
+     手填的时间、别的流程写的时间都会让它给出另一个答案，而同一件事不能有两种口径。
+     对方扩展点「完成」时 `syncBack` 写的正是「状态」列，它就是权威来源。 */
+  function stateFromStatusWord(word) {
+    var w = trim(word);
+    if (w === "已完成") return "done";
+    if (w === "进行中") return "doing";
+    return "";
+  }
+
   /* 建表用的列定义。type：1=文本 3=单选 5=日期 */
   var TEAM_SCHEMA = [
     { field_name: TF.title, type: 1 },
@@ -210,7 +327,16 @@
     { field_name: TF.assignee, type: 1 },
     { field_name: TF.who, type: 1 },
     { field_name: TF.createdAt, type: 5, property: { date_formatter: "yyyy/MM/dd HH:mm", auto_fill: false } },
-    { field_name: TF.doneAt, type: 5, property: { date_formatter: "yyyy/MM/dd HH:mm", auto_fill: false } }
+    { field_name: TF.doneAt, type: 5, property: { date_formatter: "yyyy/MM/dd HH:mm", auto_fill: false } },
+    /* ★ v0.39.0 两个**可选新列**（见 `TF_OPT`）。
+       ★ 单选的 options 必须**列全**：往单选里写一个不在 options 里的值，
+         飞书是**报错**（1254xxx），不是自动加选项 —— 少写一档，
+         就有一条状态永远写不进去，而报错信息只说「字段值不合法」。
+         所以这六个名字与 `ST_TEXT` 里对应的那六个**必须逐字一致**。 */
+    { field_name: TF.deliver, type: 3, property: { options: [
+      { name: "已派发" }, { name: "已通知" }, { name: "已读" },
+      { name: "已接收" }, { name: "进行中" }, { name: "已完成" }] } },
+    { field_name: TF.notifyAt, type: 5, property: { date_formatter: "yyyy/MM/dd HH:mm", auto_fill: false } }
   ];
 
   /* 打扰闸门的两个数：8 小时内最多 3 条。
@@ -788,6 +914,12 @@
            所以老大把这一列改成飞书的「创建人」字段（谁新建这条记录就自动填谁）
            之后，**连填都不用填**，派发人照样认得出来。 */
       from: txt(f[TF.who]) || txt(f[TF.from]),
+      /* ★ v0.39.0：**我派出去**那一侧的「他到哪一步了」。
+         它来自团队表的「状态」列（对方点完成时 `syncBack` 写的就是这一列），
+         与上面那个 `status`（**我作为接收人**的任务状态）是**两件事**，
+         所以故意分成两个字段 —— 合成一个的话，同一个字段在收件箱与发件箱里
+         含义不同，那正是「同一件事两种口径」的另一种写法。 */
+      rst: stateFromStatusWord(sel(f[TF.status])),
       at: Date.now()
     };
   }
@@ -808,6 +940,66 @@
             原来它们会被当成「派给我的」**静默**灌进本地清单。 */
       return (m && sameName(it.to, m)) || (i && sameName(it.to, i));
     });
+  }
+
+  /* ---------- 发件箱：我是谁 == 我，**且** 接收人 ≠ 我（v0.39.0）----------
+     ★★★ 为什么要新增一个函数、而不是改 `mineOnly` 的条件：
+       `mineOnly` 只留「接收人 == 我」，于是**派发人永远读不到自己派出去的那一行** ——
+       那一行后来变成什么样（对方开工 / 做完 / 被改期），派发人这一侧完全不可见。
+       但 `mineOnly` 被收件箱的判据钉着、而且服务的是已发布行为，
+       改它会让收件箱条数**静默**漂移。⇒ 新增一个**并列**的过滤，`mineOnly` 一行不改。
+
+     ★★ 两者的**互补性**是这一版的核心不变量：同一条记录不可能同时落在两个集合里
+       （P0-3 的验收：「收件箱条数一条不多」）。`toMe` 那一半就是守卫 ——
+       自己派给自己的任务（`to == me`）仍然只出现在收件箱，不会被算两次。 */
+  function outboxOf(items, me, meId) {
+    var m = trim(me), i = trim(meId);
+    return (items || []).filter(function (it) {
+      if (!it || !trim(it.rid)) return false;    /* 没有 record_id：无从回读，不算我派的 */
+      var mine = (m && sameName(it.from, m)) || (i && sameName(it.from, i));
+      var toMe = (m && sameName(it.to, m)) || (i && sameName(it.to, i));
+      return mine && !toMe;
+    });
+  }
+
+  /* 一条任务**当前该显示**的派发状态（**唯一口径**）。
+     ★★ 为什么要提成一个函数：老数据（v0.39.0 之前派出去的）只有 `{to, at}`、
+       没有 `st` —— 「缺 `st` 就按已派发算」这条推断如果写在界面上，
+       徽标那处写一遍、抽屉那处又写一遍，两处迟早漂开（本项目反复栽的就是这个）。
+     ★ 没有 `to` 的返回空串（不是「已派发」）：那根本没派过。 */
+  function assignState(a) {
+    if (!a || !trim(a.to)) return "";
+    return trim(a.st) || "recorded";
+  }
+
+  /* 把回读快照并回本地任务（popup 侧调用）。
+     输入：本地任务数组 + OUTK 里的 rows；输出 `{ tasks, changed }` ——
+     **只在真变了时说变了**，否则每次开弹窗都会白写一次盘。
+     ★ 按 `rid` 认，不按位置：本地那条任务与表里那一行就是靠 `rid` 绑起来的。 */
+  function applyOutbox(tasks, rows) {
+    var byRid = {};
+    (rows || []).forEach(function (r) { if (r && trim(r.rid)) byRid[trim(r.rid)] = r; });
+    var changed = 0;
+    (tasks || []).forEach(function (t) {
+      var a = t && t.assign;
+      if (!a || !trim(a.rid)) return;
+      var r = byRid[trim(a.rid)];
+      if (!r) return;
+      /* 撤回是本地终态：远端再变也不回填（否则「撤回」过一会儿自己复活）。 */
+      if (trim(a.st) === "revoked") return;
+      /* ★ 老数据只有 `{to, at}`、没有 `st` —— 但**老数据也没有 `rid`**，
+         所以它本来就匹配不到这里（回读要按 record_id 认）。
+         它的状态由 `assignState()` 在显示层推断成「已派发」。
+         ⇒ 别在这儿补一个「rid 为空时按 to 匹配」的兜底：同名的人有好几个，
+           按名字匹配会把别人的状态灌到你的任务上，而且零报错。 */
+      var nx = laterState(trim(a.st) || "recorded", r.st);
+      if (nx && nx !== trim(a.st)) {
+        a.st = nx;
+        a.stAt = Number(r.at) || Date.now();
+        changed++;
+      }
+    });
+    return { tasks: tasks, changed: changed };
   }
 
   /* 远端拉回来的 items → 与本已有的合并。
@@ -999,7 +1191,53 @@
        「派发人不需要去填写，默认 = 飞书 openid」落到代码里的那一行。 */
     return ensureMe(cfg).then(function (from) {
       return Feishu.createRaw(cfg, [toTeamFields(task, from, who)]);
+    }).then(function (got) {
+      /* ★★★ v0.39.0：把 `recordId` **交出去**。
+         `createRaw` 一直在返回它（`[{recordId, fields}]`），只是调用方拿到就丢 ——
+         于是「我派出去的那一行」没有任何本地锚点，「回读」无从谈起。
+         ⇒ 这一行是整条闭环的技术入口（PRD §3.1）。
+         ★ 在这里把返回形态规范化，让调用方不必知道 `createRaw` 的数组结构：
+           两处各解析一遍的话，飞书改一次返回体就会有一处**静默**落空。 */
+      var r0 = (got && got[0]) || null;
+      return { recordId: trim(r0 && r0.recordId), raw: got };
     });
+  }
+
+  /* ---------- 失败原因 → **能照做的一句话**（v0.39.0 / P0-5）----------
+     ★ 为什么必须过这一层：把原始 message 甩给用户等于没说 ——
+       「请求失败」「未知原因」这类字，一个都照做不了。
+     ★ 只做**有确定依据**的改写，认不出来就原样返回原文：
+       猜一句可能是错的话（比如把网络问题说成权限问题），比说「不知道」更坏 ——
+       用户会照着错的指引去翻后台，然后白花半小时。
+     ★ 带飞书错误码的「去后台把 X 加上」比「失败」有用一百倍；
+       这也是竞品调研里 `FeishuIndex` 那个项目最值得抄的一点（错误自愈 + 连通性测试）。 */
+  function failText(e) {
+    var msg = trim(e && (e.message || e.msg || e.errmsg));
+    /* ★★★ 别拿 `String(e)` 当兜底：`new Error("")` 的字符串形式是 `"Error"` ——
+       那是**构造函数的名字**，不是原因。它会伪装成一句「原因」通过所有判据，
+       而用户在界面上看到的是「没派出去：Error」—— 跟 §P0-5 要的「说得出卡在哪」
+       正好相反，而且**看起来像有原因**，所以没人会去查它。
+       ⇒ 只有 `e` 本身是字符串（飞书那边有些地方直接抛字符串）时才取它。 */
+    if (!msg && typeof e === "string") msg = trim(e);
+    var code = trim((e && e.code) || (e && e.errCode));
+    var all = msg + " " + code;
+    if (/没配好|没配组员表|团队派发/.test(msg)) {
+      return msg + "（去设置页点一下「一键生成」）";
+    }
+    if (/没选接收人/.test(msg)) return "还没选接收人";
+    if (/99991672|99991663|permission|权限/i.test(all)) {
+      return "应用缺权限（" + (code || "99991672") + "）：去飞书开发者后台给这个应用开「多维表格」读写权限，再派一次";
+    }
+    if (/1254045|FieldNameNotFound|字段名不存在/i.test(all)) {
+      return "团队表缺列（" + (code || "1254045") + "）：去设置页点「一键生成」把列补齐";
+    }
+    if (/1254302|1254001|invalid.{0,8}field|字段值不合法/i.test(all)) {
+      return "团队表某列的值不合法（" + (code || "1254xxx") + "）：多半是单选列少一档选项，去设置页点「一键生成」补齐";
+    }
+    if (/Failed to fetch|NetworkError|network|timeout|超时|ENOTFOUND|ECONN/i.test(all)) {
+      return "网络没通（" + msg + "）：检查网络后重派一次";
+    }
+    return msg || "未知原因";
   }
 
   /* ---------- 拉取一轮：返回 { items, added, fresh } ----------
@@ -1013,6 +1251,15 @@
       /* ★★ v0.38.0：把 `meId` 一起传下去 —— 「我」有两个合法形态
          （名字 / open_id，见 `whoOf`），漏传的话自己派出去的任务收不回来。 */
       var mine = mineOnly(all, cfg.me, cfg.meId);
+      /* ★★★ v0.39.0：**同一份全表数据**顺手分出第二路 —— 我派出去的那些。
+         零额外请求：`listAll` 拉的本来就是全表，以前筛完收件就把其余全丢了。
+         ⇒ 这就是「派发人回读」的全部实现（PRD §8）。
+         ★ `st` 取的是那一行「状态」列回读出来的码，可能是空串
+           （对方还没动过 / 没装扩展）—— 空串**照原样带上**，
+           由 `applyOutbox` 的单调递增去决定要不要改本地状态。 */
+      var out = outboxOf(all, cfg.me, cfg.meId).map(function (x) {
+        return { rid: x.rid, st: x.rst || "", to: x.to, title: x.title };
+      });
       var m = mergeItems(known || [], mine);
       var seenIds = {};
       (known || []).forEach(function (x) { if (x && x.id) seenIds[x.id] = 1; });
@@ -1020,7 +1267,7 @@
       /* ★ v0.33.0：这里原来还会「把任务表里出现过的名字并进名单」。
          名单改由组员表提供之后删掉了 —— 留着的话名单就有**两个来源**，
          而这个功能的全部意义就是「名单只有一处、谁加了人全组都看得见」。 */
-      return { items: m.items, added: m.added, fresh: fresh };
+      return { items: m.items, added: m.added, fresh: fresh, outbox: out };
     });
   }
 
@@ -1376,8 +1623,10 @@
   }
 
   var api = {
-    CFK: CFK, ITK: ITK, PEND: PEND, LOGK: LOGK,
-    TF: TF, TF_REQ: TF_REQ, TF_LEGACY: TF_LEGACY, TEAM_SCHEMA: TEAM_SCHEMA,
+    CFK: CFK, ITK: ITK, PEND: PEND, LOGK: LOGK, OUTK: OUTK,
+    /* ★ v0.39.0：`TF_OPT` 也要导出 —— 门槛要断言「可选新列不在 `TF_REQ` 里」，
+       而判据得能拿到这两个集合，否则只能靠读源码字符串（那种门会自己变绿）。 */
+    TF: TF, TF_REQ: TF_REQ, TF_LEGACY: TF_LEGACY, TF_OPT: TF_OPT, TEAM_SCHEMA: TEAM_SCHEMA,
     PTF: PTF, PEOPLE_SCHEMA: PEOPLE_SCHEMA, ROLE_ME: ROLE_ME, ROLE_MEMBER: ROLE_MEMBER,
     TASK_TABLE_NAME: TASK_TABLE_NAME, PEOPLE_TABLE_NAME: PEOPLE_TABLE_NAME,
     WINDOW_H: WINDOW_H, WINDOW_MAX: WINDOW_MAX,
@@ -1399,6 +1648,18 @@
     toTeamFields: toTeamFields,
     fromTeamFields: fromTeamFields,
     mineOnly: mineOnly,
+    /* ★ v0.39.0 派发闭环四件套：
+       `outboxOf` 与 `mineOnly` **并列**（互补，不是替换）；
+       `applyOutbox` 是「回读结果 → 本地状态」的唯一入口；
+       `stText` / `laterState` 是状态词与单调递增的唯一口径。 */
+    outboxOf: outboxOf,
+    applyOutbox: applyOutbox,
+    assignState: assignState,
+    ST_TEXT: ST_TEXT,
+    stText: stText,
+    laterState: laterState,
+    stateFromStatusWord: stateFromStatusWord,
+    failText: failText,
     mergeItems: mergeItems,
     gate: gate,
     dateWord: dateWord,
