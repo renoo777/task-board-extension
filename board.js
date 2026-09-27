@@ -1,8 +1,16 @@
 /* board.js —— 任务数据看板（v0.18.0）
    ============================================================
-   这是「设置页 → 看板」那一页的全部逻辑。数据只有一份：`taskboard.v1`。
-   看板**只读** —— 不写 storage、不发消息、不新开同步链路。
+   这是「设置页 → 看板」那一页的全部逻辑。
+   ★★★ 数据源 **v0.40.0 起是三份**（原来只有第一份）：
+     ① `taskboard.v1` —— 我自己的任务（KPI / 任务分析 / 趋势 / 热力 / 关注 全用它）；
+     ② `taskboard.inbox.outbox`（`Inbox.OUTK`）—— 我派出去的活，后台每轮轮询回读；
+     ③ `taskboard.inbox.items`（`Inbox.ITK`）—— 派给我的活。
+     第 ②③ 份只服务卡片「团队任务」（v0.40.0 · P0-5）。
+   ★★★ 看板**仍然只读** —— 不写 storage、不发消息、不新开同步链路。
    （判据：这个文件里不该出现 Store.set / chrome.runtime.sendMessage。）
+   ★★ 只读的代价原本是「团队那块会停在旧状态」（本地状态只在打开弹窗时才被回填），
+      解法**不是**去看板里写数据，而是把 `OUTK` 的最新状态按**单调递增**推上去 ——
+      算出来就画，一个字节都不落盘（见 `teamInput`）。
 
    ★ 图表为什么全部手写 SVG，不引图表库
      ① MV3 默认 CSP 禁远程脚本 → 库必须打进包；Chart.js 压缩后约 200KB，
@@ -28,6 +36,12 @@
   var TREND_DAYS = 14;
   var HEAT_WEEKS = 12;
   var FOCUS_MAX = 6;
+  /* 团队那三列的**顺序**（值是 `Inbox.CAT_TEXT` 的键）。
+     ★ 顺序是**显示**的事，所以生在这儿；而「有哪些类别、各叫什么」是**语义**的事，
+       生在 `inbox.js` 一处（弹窗将来也要用同一张表）。
+       ⇒ 门要断言这里与 `Object.keys(Inbox.CAT_TEXT)` 逐字相同 ——
+         少一个类别 = 看板少一列，而不会有任何地方报错。 */
+  var CAT_ORDER = ["todo", "doing", "done"];
 
   /* ---------------- 小工具 ---------------- */
   function pad(n) { return (n < 10 ? "0" : "") + n; }
@@ -54,11 +68,105 @@
     catch (e) { return Promise.resolve(null); }
   }
 
+  /* ---------------- 团队那三份数据的接口（v0.40.0） ----------------
+     ★★ 三个 key 名**不在这里抄一遍**：它们是 `inbox.js` 的东西，抄了就是第二份键名 ——
+       哪天 `Inbox.ITK` 改名，看板会安静地读一个空 key（**读空 ≠ 报错**），
+       症状是「团队那块永远说还没同步过」，而没有任何东西会红。
+     ★ 拿不到 `Inbox` 就返回 null（而不是编一个默认键）—— 那种情况只可能出现在
+       某个测试没按 manage.html 的顺序引脚本，这时**说清楚**比猜一个键好。 */
+  function teamKeys() {
+    if (typeof Inbox === "undefined" || !Inbox.ITK) return null;
+    return { ik: Inbox.ITK, ok: Inbox.OUTK, ck: Inbox.CFK };
+  }
+
+  /* 三份原始数据 → 「团队任务」那块要的纯数据。
+     ★ 为什么**不在 compute 里做**：compute 是这一页唯一被单测直接喂数组的函数
+       （门钉着它不碰 document / chrome），而这一步要借 `Inbox` 的四个口径
+       （`assignState` / `laterState` / `catOf` / `staleOf`）。
+       分开之后：join 归这里、聚合归 `teamOf`、两个都能单独喂数据验。 */
+  function teamInput(tasks, ik, ok, ck) {
+    if (typeof Inbox === "undefined" || !Inbox.ITK) return null;
+    var rows = (ok && Array.isArray(ok.rows)) ? ok.rows : [];
+    var remote = {};
+    rows.forEach(function (r) { if (r && r.rid) remote[String(r.rid)] = String(r.st || ""); });
+    var now = Date.now();
+    var out = [], failed = 0, revoked = 0;
+    (tasks || []).forEach(function (t) {
+      var a = t && t.assign;
+      /* 没派出去的本地任务没有 `assign`（或没有接收人）—— 与 `popup` 的
+         `outItems()` 同一条判据：**只有 `to` 有值才算派过**。 */
+      if (!a || String(a.to || "").trim() === "") return;
+      var st = String(a.st || "").trim();
+      /* 撤回（本地终态）/ 失败（异常态）**不进三列**：它们是流程外的两条支路，
+         塞进「未开始」会让那一列混着「派出去了还没动」和「压根没派出去」——
+         而这两件事要做的动作完全不同（一个去催、一个去重派）。 */
+      if (st === "revoked") { revoked++; return; }
+      if (st === "failed") { failed++; return; }
+      /* ★★ 显示状态 = 本地状态与**远端最新状态**里更靠后的那个（单调递增，`laterState`）。
+         为什么不能只用本地：`assign.st` 只在**打开弹窗**时被 `applyOutbox` 回填 ——
+         没开过弹窗就一直停在「已派发」。看板读得到 `OUTK`（后台每轮都写），
+         顺手推一把就能看到最新进度，而且**一个字节都不落盘**（看板只读）。
+         为什么要单调：两个来源必然不同步，允许倒退就会出现「完成 → 待办」——
+         用户会以为活被退回来了。 */
+      var shown = Inbox.laterState(Inbox.assignState(a), remote[String(a.rid || "")] || "");
+      var since = Number(a.stAt) || Number(a.at) || 0;
+      out.push({
+        to: String(a.to).trim(),
+        st: shown,
+        cat: Inbox.catOf(shown),
+        /* 「未领取」= 已派发、对方还没动。**只有这一档**算 ——
+           `doing` 说明他已经动了（在做了，不该再催）。
+           -1 = 这一条不是未领取；>= 0 = 已经压了这么多天。 */
+        silent: (shown === "recorded" && since) ? Math.floor((now - since) / 86400000) : -1
+      });
+    });
+    var items = Array.isArray(ik) ? ik : [];
+    return {
+      /* ★ `on`：团队派发开没开 —— 与 `popup` 读的是同一个 `readCfg`。
+         `ck` 可能是在迁移中途的半个对象，`readCfg` 自己能兜住。 */
+      on: !!Inbox.readCfg(ck).on,
+      /* ★ `synced`：后台**至少跑过一轮**才有这个时间戳（`OUTK = {at, rows}`）。
+         它是「0 条」和「还没同步过」之间唯一的分界 ——
+         没有它就只能靠 `rows.length === 0`，而那两种情况长得一模一样。 */
+      synced: !!(ok && Number(ok.at)),
+      inCount: items.length,
+      out: out, failed: failed, revoked: revoked
+    };
+  }
+
+  /* 纯聚合：三列的计数 + 按人一行（不碰 Inbox、不碰时间 —— 全在 `teamInput` 里做完）。 */
+  function teamOf(team) {
+    if (!team) return null;
+    var out = team.out || [];
+    var cols = {};
+    CAT_ORDER.forEach(function (k) { cols[k] = 0; });
+    var by = {}, order = [];
+    out.forEach(function (r) {
+      if (r.cat && Object.prototype.hasOwnProperty.call(cols, r.cat)) cols[r.cat]++;
+      var p = by[r.to];
+      if (!p) { p = by[r.to] = { name: r.to, n: 0, done: 0, silent: -1 }; order.push(r.to); }
+      p.n++;
+      if (r.cat === "done") p.done++;
+      if (r.silent > p.silent) p.silent = r.silent;
+    });
+    /* 顺手最多的排前面（谁压着活，谁最该被看见）；名字只用来把同量的排稳，
+       —— 同级每次刷新换位置，看板就没法竖着读。 */
+    var people = order.map(function (k) { return by[k]; }).sort(function (a, b) {
+      return (b.n - a.n) || a.name.localeCompare(b.name);
+    });
+    return {
+      on: !!team.on, synced: !!team.synced,
+      outCount: out.length, inCount: Number(team.inCount) || 0,
+      cols: cols, failed: Number(team.failed) || 0, revoked: Number(team.revoked) || 0,
+      people: people
+    };
+  }
+
   /* ---------------- 计算层（纯函数） ----------------
      纯函数是这道题的**可测性**所在：喂进去一组任务，出来的每个数字都能
      在测试里逐条对。渲染层只负责把数字摆到该摆的地方。
      ★ 这里不碰 DOM、不碰 storage —— 所以 _test_board.js 能直接调它。 */
-  function compute(tasks, projs) {
+  function compute(tasks, projs, team) {
     tasks = Array.isArray(tasks) ? tasks : [];
     projs = Array.isArray(projs) ? projs : [];
     var today = todayStr();
@@ -237,7 +345,10 @@
       weekDone: weekDone, streak: streak, avgCycle: avgCycle,
       trend: trend, heat: heat, byProj: byProj, byPri: byPri,
       unassigned: unassigned,
-      focus: focus.slice(0, FOCUS_MAX), focusMore: Math.max(0, focus.length - FOCUS_MAX)
+      focus: focus.slice(0, FOCUS_MAX), focusMore: Math.max(0, focus.length - FOCUS_MAX),
+      /* ★ v0.40.0：团队任务那一块（只读）。`null` = 读不到团队模块
+         （脚本没按 manage.html 的顺序引）—— 渲染层据此**说清楚**，不是画一排 0。 */
+      team: teamOf(team)
     };
   }
 
@@ -435,6 +546,57 @@
 
   function empty(msg) { return '<div class="bd-empty">' + esc(msg) + "</div>"; }
 
+  /* --- ⑦ 团队任务（v0.40.0 · P0-5 / P0-6）---
+     老大原话：「后台看板也增加一个团队任务的看板」。
+     ★ 列 = **状态类别**（未开始/进行中/已完成），不是状态 —— Jira 的官方抽象：
+       状态可以多，类别只有三个；把九个状态摆成九列，没人看得懂（PRD §4.1）。
+       类别词与归类规则都在 `Inbox`（`CAT_TEXT` / `catOf`），这里只决定**顺序**。
+     ★★ 「–」≠「0」（本项目最贵的铁律之一）在这里的落点是**两种「空」**：
+       · 没同步过  → 「团队任务还没同步过」——**我不知道有几条**，不显示 0
+       · 同步过、0 条 → 照常显示 `0`——**真没有**
+       两者长得像、含义相反；把前者画成 0，用户会以为活全没了。
+     ★ 「另有 N 条没派出去 / 已撤回」单独一句话：它们**不在三列里**（流程外的两条支路），
+       不写一句的话，三列加起来对不上「派出去 N 条」，用户会先怀疑看板算错了
+       —— 与「没归类的任务」那条同一个道理（见 `unassigned`）。
+     ★ 按人一行：谁的活最多排最前（谁压着活最该被看见）；同量按名字排稳 ——
+       「同一批数据每次刷新换位置」会让这张表没法竖着读。 */
+  function teamBlock(s) {
+    var t = s.team;
+    if (!t) return empty("这一页读不到团队模块 —— 刷新一下再看看");
+    if (!t.on) return empty(Inbox.EMPTY_OFF);
+    if (!t.synced) return empty("团队任务还没同步过 —— 打开一次弹窗、或等后台跑一轮就有了");
+    var cols = CAT_ORDER.map(function (k) {
+      return '<div class="bd-col" data-cat="' + k + '">' +
+        '<span class="bd-ck">' + esc(Inbox.CAT_TEXT[k]) + "</span>" +
+        '<b class="bd-cv">' + t.cols[k] + "</b></div>";
+    }).join("");
+    var more = [];
+    if (t.failed) more.push(t.failed + " 条没派出去");
+    if (t.revoked) more.push(t.revoked + " 条已撤回");
+    var foot = more.length
+      ? '<div class="bd-anrow bd-anun"><span class="bd-dot"></span>' +
+        '<span class="bd-note">另有 ' + esc(more.join("、")) +
+        "（不在上面三列里）</span></div>"
+      : "";
+    var people = t.people.length
+      ? t.people.map(function (p) {
+          /* 「最久未领取」只对**真的还有未领取的**那些人写天数；
+             没有的话写「没有未领取的」而**不是** `—`：
+             `–` 在本项目里是「不知道」，这里的情况恰恰是「确定没有」，两个意思相反。 */
+          return '<div class="bd-row">' +
+            '<span class="bd-dot"></span>' +
+            '<span class="bd-name" title="' + esc(p.name) + '">' + esc(p.name) + "</span>" +
+            '<span class="bd-num">' + p.n + " 条</span>" +
+            '<span class="bd-sub">已完成 ' + p.done +
+            (p.silent >= 0 ? " · 最久未领取 " + p.silent + " 天" : " · 没有未领取的") +
+            "</span></div>";
+        }).join("")
+      : empty("还没派活给任何人");
+    return '<div class="bd-cols">' + cols + "</div>" + foot +
+      '<div class="bd-split"><div class="bd-hd"><b>按人</b>' +
+      '<span class="sub">派出去的活</span></div><div class="bd-rows">' + people + "</div></div>";
+  }
+
   /* ---------------- 把整页画出来 ---------------- */
   function paint(s) {
     var stat = el("bdStat");
@@ -466,13 +628,28 @@
     if (el("bdPri")) el("bdPri").innerHTML = priBars(s);
     if (el("bdHeat")) el("bdHeat").innerHTML = heatmap(s);
     if (el("bdFocus")) el("bdFocus").innerHTML = focusList(s);
+    /* ★ v0.40.0：团队任务块。卡头那行「派出去 N 条 · 收到 M 条」是这一块的**口径声明**
+       （像「任务分析」的 bdAnNote、「近 14 天」的 bdTrendNote 一样必须印出来）——
+       两个数字两个来源，不写清哪个是哪个，用户会把它们当成一件事。 */
+    if (el("bdTeam")) el("bdTeam").innerHTML = teamBlock(s);
+    if (el("bdTeamNote")) {
+      var tm = s.team;
+      el("bdTeamNote").textContent = (!tm || !tm.on || !tm.synced)
+        ? "" : ("派出去 " + tm.outCount + " 条 · 收到 " + tm.inCount + " 条");
+    }
   }
 
   function load() {
-    return Promise.all([Store(KEY), Store(PKEY)]).then(function (r) {
+    var k = teamKeys();
+    var jobs = [Store(KEY), Store(PKEY)];
+    /* ★★ 三个团队 key 走**同一次** Promise.all：分开读会出现
+       「条数用的是新数据、状态用的是旧数据」的中间态（一屏里两个时刻的东西）。 */
+    if (k) { jobs.push(Store(k.ik)); jobs.push(Store(k.ok)); jobs.push(Store(k.ck)); }
+    return Promise.all(jobs).then(function (r) {
       var data = r[0] || {};
       var projs = Array.isArray(r[1]) ? r[1] : [];
-      return compute(data.tasks || [], projs);
+      var tasks = data.tasks || [];
+      return compute(tasks, projs, k ? teamInput(tasks, r[2], r[3], r[4]) : null);
     });
   }
 
@@ -482,5 +659,10 @@
 
   /* 切到看板这一页时调一次。★ 不做「一直监听 storage」——
      看板不进后台链路，打开时读一次就够；实时刷新会跟同步写抢同一份 key。 */
-  window.Board = { compute: compute, refresh: refresh, paint: paint, load: load };
+  window.Board = {
+    compute: compute, refresh: refresh, paint: paint, load: load,
+    /* ★ v0.40.0：这两个导出**只给测试**（`_test_board.js` 要能逐条对
+       「三份数据 → 三列 + 按人」这一步）。界面走 `load()`/`refresh()`。 */
+    teamOf: teamOf, teamInput: teamInput, CAT_ORDER: CAT_ORDER
+  };
 })();

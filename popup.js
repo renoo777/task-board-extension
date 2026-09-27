@@ -799,6 +799,16 @@
   }
 
   function render(){
+    /* ★★★ v0.40.0：团队任务视图是一块**独立的容器**（两个分区），它不画本地任务 ——
+       所以在这里**整块分流**：切到 team 就立刻交给 `renderTeam()`，下面这 200 行一行都不跑。
+       ★ P0-1 的验收是「切回『今天』时的行为与改动前**逐字一致**」——
+         靠的就是这一刀切干净，而不是到既有分支里到处塞 `if (st.view === "team")`
+         （那种改法会让「今天」那条路径也沾上团队逻辑，验收根本没法证）。
+       ★ `renderTeamCount()` 在两个分支之前调：入口上那个数字与当前在哪一屏无关。 */
+    renderTeamCount();
+    if (st.view === "team") { setTeamMode(true); renderTeam(); return; }
+    setTeamMode(false);
+
     var vis = visibleTasks();
     var buckets = {todo:[],doing:[],done:[]};
     vis.forEach(function(t){ if (buckets[t.status]) buckets[t.status].push(t); });
@@ -1002,6 +1012,23 @@
          ★ 只在「按项目」视图下重绘：别的视图里 `.prow` 根本不存在，
            这次 render() 是纯浪费（而且它会重建整列 DOM，会打断正在进行的拖拽）。 */
       if (st.view === "project") render();
+      /* ★★★ v0.40.0：入口上那个团队计数**只有 `render()` 会刷**（它进 `renderTeamCount`），
+         而 `renderInbox()` 只管收件箱那扇门上的数字。于是：
+           · 首帧 render() 跑的时候 `ITK` 还没读回来（`inboxItems` 是空的）；
+           · 数据回来这一趟只调了 `renderInbox()`，`segTeamN` 就停在首帧那个数。
+         症状：按钮上写着「团队任务 3」，点进去两个分区加起来是 5 ——
+         **数字与眼前看到的行数对不上**，而这正是本项目最贵的那一类
+         （v0.26.0 起反复栽：数字骗人比不显示更伤信任）。
+         ★ 修法有两半，缺一不可：
+           ① 计数**无条件**刷一次 —— 它回答的是「有没有人给你派活」，
+              与「现在站在哪一屏」无关（见 renderTeamCount 的注释）；
+           ② 站在团队屏上时把两个分区也重画。只加 ① 的话：数据回来了、数字对了，
+              但两个分区还是空的 —— 那是「空态在骗人」，更糟。
+         ★ 为什么不像 project 那样一律 render()：别的视图里这次 render() 会把整列
+           DOM 重建一遍，会打断正在进行的拖拽（就是上面刚写过的那个理由）。
+         ★ 两半都收在 `refreshTeamUI()` 里 —— 同一批异步数据还有另外两个入口
+           （`ITK` / `CFK` 的 onChanged），三处必须同一个口径。 */
+      refreshTeamUI();
       /* ★★★ v0.38.3：名单**不能只等后台轮询**。抽屉里那个派发下拉读的就是
          `cfg.people` 这份本地缓存，缓存空的时候它是灰的 ——
          实测老大的现场正是 `people:""` / `peopleAt:0`（收件轮询从没启动过，
@@ -1032,17 +1059,25 @@
     if (inboxOpen) renderInboxBody();
   }
 
+  /* 「派给我的」的排序 —— ★ v0.40.0：**浮层与团队视图共用这一处**
+     （同 `outSorted` 的理由：抄一份，两处的顺序迟早不一样）。
+     规则：按**任务日期**升序、没有日期的排最后（`"9999"` 兜底）—— 早该做的排前面。
+     这是 v0.32.0 起就有的规则，本版**没有新造**。 */
+  function inSorted(){
+    return (inboxItems || []).slice().sort(function (a, b) {
+      return String(a.date || "9999").localeCompare(String(b.date || "9999"));
+    });
+  }
+
   function renderInboxBody(){
     var body = document.getElementById("inboxFlyBody");
     if (!body) return;
     body.innerHTML = "";
-    var list = inboxItems.slice().sort(function (a, b) {
-      return String(a.date || "9999").localeCompare(String(b.date || "9999"));
-    });
+    var list = inSorted();
     if (!list.length) {
       var e = document.createElement("div");
       e.className = "holdfly-empty";
-      e.textContent = "还没有人派任务给你";
+      e.textContent = teamEmptyText("mine");
       body.appendChild(e);
       return;
     }
@@ -1052,8 +1087,13 @@
   /* ★ 自绘而不是复用 cardEl：cardEl 是给**本地任务**画的，它的点击/拖拽/
      就地编辑全都拿 `dataset.id` 去 st.tasks 里找那条任务 —— inbox 里的任务
      根本不在那里，复用会得到一个「点下去什么都没发生」的卡片。
-     它只有两个能做的动作：看、标完成。 */
-  function inboxCardEl(it){
+     它只有两个能做的动作：看、标完成。
+
+     ★★ v0.40.0：多了第二个参数 `withState` —— 团队视图要在这张卡上多画一个
+     **状态词徽标**（P0-3 的验收），而**浮层里不画**（不改已发布的样子）。
+     ★ 为什么用参数而不是另写一张卡：两张卡就是两份渲染口径，
+       而 D2 拍板的正是「两处入口共用同一份渲染口径」。差异由参数**显式**表达。 */
+  function inboxCardEl(it, withState){
     var el = document.createElement("article");
     el.className = "card" + (it.status === "done" ? " is-done" : "");
     el.dataset.inboxId = it.id || "";
@@ -1076,6 +1116,14 @@
       when.className = "txt";
       when.textContent = (typeof Inbox !== "undefined") ? Inbox.dateWord(it.date) : it.date;
       meta.appendChild(when);
+    }
+    /* ★★ v0.40.0：收件侧的状态词。码从 `it.status` 来（**收件侧的统一口径**，
+       理由见 `Inbox.stateFromLocalStatus` 的注释），词从 `stText(_, "in")` 来
+       —— 「还没动」在接收人这儿叫「待办」（D7）。 */
+    if (withState) {
+      var st = (typeof Inbox !== "undefined") ? Inbox.stateFromLocalStatus(it.status) : "";
+      var bd = stateBadge(st, "in");
+      if (bd) meta.appendChild(bd);
     }
     el.appendChild(meta);
 
@@ -1145,6 +1193,15 @@
      ★ 数据来源只有一个：本地任务的 `t.assign`（状态由后台回读灌进来）。
        这里**绝不另读一次团队表** —— 那就会变成同一件事的第二种口径。 */
 
+  /* ★★ v0.40.0（D5 拍板）：多久算「他还没回应」。
+     一天太吵（人家可能只是还没打开表）、三天太晚（事已经黄了）——
+     沿用上一版 PRD 催办窗口的思路。
+     ★★★ 这个数**只有一处**（v0.40.0 收口到 `Inbox.NO_REPLY_MS` + `Inbox.staleOf`）：
+       它原来就长在这儿，然后看板的团队块也要用同一个门槛 ——
+       差一点就写成第二份，那样「浮层说还没回应、看板说没事」这种自相矛盾
+       迟早会出现，而用户只会觉得这两个数字里有一个是假的。
+       ⇒ 弹窗侧一行判定都不留，全交给 `Inbox.staleOf`。 */
+
   function outItems(){
     return (st.tasks || []).filter(function (t) {
       var a = t && t.assign;
@@ -1154,19 +1211,31 @@
     });
   }
 
-  /* 状态徽标 —— **全项目唯一的画法**（抽屉里那条任务与发件箱里那一行都用它）。
-     ★ 认不出来的状态码**不画**：绝不把裸状态码漏到界面上（P0-4 的验收）。 */
+  /* 状态徽标 —— **全项目唯一的画法**（任务抽屉、发件箱浮层、团队视图三处都用它）。
+     ★ 认不出来的码、以及**当前没有生产者的档**一律不画 ——
+       `Inbox.uiState` 是过滤的唯一口径（它背后是 `ST_LIVE`）：
+       既不把裸状态码漏到界面上，也不画一个永远不来的词。
+     ★ `side`：`"in"` = 接收人视角（`recorded` 要叫「待办」，D7 拍板）。
+       ★★ popup **不许自己写词表** —— 词汇只有 `Inbox.stText` 一处；
+       这也是「两处入口共用同一份渲染口径」（D2）能成立的前提。 */
+  function stateBadge(st, side){
+    var s = (typeof Inbox !== "undefined") ? Inbox.uiState(st) : (st || "");
+    if (!s) return null;
+    var txt = (typeof Inbox !== "undefined") ? Inbox.stText(s, side) : "";
+    if (!txt) return null;
+    var b = document.createElement("i");
+    b.className = "astate st-" + s;
+    b.textContent = txt;
+    return b;
+  }
+
+  /* 「我派的」那一行的徽标：状态从 `assign` 来。 */
   function stBadge(a){
     if (!a || !a.to) return null;
     /* ★ 状态的推断**只有一处**（`Inbox.assignState`：老数据缺 `st` 时按「已派发」算）——
        这里再写一遍的话，抽屉那句与徽标就会是两个口径。 */
     var st = (typeof Inbox !== "undefined") ? Inbox.assignState(a) : (a.st || "recorded");
-    var txt = (typeof Inbox !== "undefined") ? Inbox.stText(st) : "";
-    if (!txt) return null;
-    var b = document.createElement("i");
-    b.className = "astate st-" + st;
-    b.textContent = txt;
-    return b;
+    return stateBadge(st);
   }
 
   function renderOutbox(){
@@ -1181,22 +1250,29 @@
     if (outOpen) renderOutboxBody();
   }
 
-  function renderOutboxBody(){
-    var body = document.getElementById("outFlyBody");
-    if (!body) return;
-    body.innerHTML = "";
-    /* 排序：**没走完的在前、最近的在上** —— 排的是「我该关心什么」，
-       不是「我什么时候派的」（已完成的活不该常年顶在最上面）。 */
-    var list = outItems().slice().sort(function (a, b) {
+  /* 「我派的」的排序 —— ★ v0.40.0：**浮层与团队视图共用这一处**。
+     抄一份的话两处的顺序迟早不一样，而顺序正是「我该先关心哪一条」的答案
+     （本项目已经为「同一件事两种口径」付过两次账：v0.38.0、v0.39.0）。
+     规则：**没走完的在前、最近的在上** —— 排的是「我该关心什么」，
+     不是「我什么时候派的」（已完成的活不该常年顶在最上面）。 */
+  function outSorted(){
+    return outItems().slice().sort(function (a, b) {
       var da = ((a.assign || {}).st === "done") ? 1 : 0;
       var db = ((b.assign || {}).st === "done") ? 1 : 0;
       if (da !== db) return da - db;
       return (Number((b.assign || {}).at) || 0) - (Number((a.assign || {}).at) || 0);
     });
+  }
+
+  function renderOutboxBody(){
+    var body = document.getElementById("outFlyBody");
+    if (!body) return;
+    body.innerHTML = "";
+    var list = outSorted();
     if (!list.length) {
       var e = document.createElement("div");
       e.className = "holdfly-empty";
-      e.textContent = "你还没派过任务给别人";
+      e.textContent = teamEmptyText("out");
       body.appendChild(e);
       return;
     }
@@ -1228,6 +1304,17 @@
     var bd = stBadge(a);
     if (bd) meta.appendChild(bd);
     el.appendChild(meta);
+
+    /* ★★ v0.40.0（P0-3 / D5）：「还没回应」—— 学 PagerDuty 把 `unacknowledged`
+       当**一等公民状态**，而不是「等一等自然就有的东西」。
+       ★ 判定**只有一处**（`Inbox.staleOf`：只看 `recorded`，起点 `stAt` 退 `at`，
+         凑不够 48 小时就返回 0）—— 这里不再自己算毫秒数（理由见 `NO_REPLY_MS` 那段）。 */
+    if (typeof Inbox !== "undefined" && Inbox.staleOf(a)) {
+      var nr = document.createElement("div");
+      nr.className = "onoreply";
+      nr.textContent = "还没回应";
+      el.appendChild(nr);
+    }
 
     /* ★ 失败原因必须**留在卡片上**，不是弹一次就没了（P0-5 的验收：
        那条显示原因 + 一句能照做的话）。 */
@@ -1301,6 +1388,128 @@
          （和 holdFly / inboxFly 同一处理）。 */
       outTimer = setTimeout(function () { if (!outOpen) el.hidden = true; }, 200);
     }
+  }
+
+  /* ============================================================
+     团队任务视图（v0.40.0 · P0-1 / P0-2 / P0-3）
+     ============================================================
+     ★★★ 这一屏回答两个问题、**并列**呈现：
+       · 「派给我的」—— 源头是 `Inbox.ITK`（后台轮询时已过 `mineOnly`）
+       · 「我派的」  —— 源头是本地任务的 `t.assign`（状态由后台回读灌进来）
+     两个筛子**互补**（`outboxOf` 要求接收人 != 我），所以同一条记录只可能落在
+     一边 —— 这就是「同一件事不许出现在两处」的保证（P0-2 的验收）。
+     ★★ 两边都**不落地成本地任务**（D3 拍板）：一落地就有「本地改了、远端没改」
+       的双向冲突，而那是本项目血债最多的地方（PRD §9 反对意见②）。
+     ★★ 两处入口（本视图 / 底栏浮层）**共用同一份渲染口径**（D2）：
+       「我派的」两边都走 `outSorted()` + `outCardEl()`；
+       「派给我的」两边都走 `inSorted()` + `inboxCardEl()`（后者多一个徽标参数）。
+       状态词、排序、卡片三样都只有一处实现 —— 这是本版最容易写歪的地方。 */
+
+  /* 主区在两块容器之间切换。★ `hidden` 只在这一处改 —— 别处再改一次就会打架。 */
+  function setTeamMode(on){
+    var b = document.getElementById("board");
+    var w = document.getElementById("teamWrap");
+    if (b) b.hidden = !!on;
+    if (w) w.hidden = !on;
+  }
+
+  /* 空态：**必须说清为什么空**（PRD §7.4 ②）。
+     「还没开派发」与「没有人派活给你」是两件事，混成一句会让人以为功能坏了。
+     ★★★ v0.40.0：字面量**不在这里**（全部搬到 `Inbox.EMPTY_*`，看板读同一份）——
+       这两句话同时出现在四个地方（收件箱浮层 / 发件箱浮层 / 团队视图两个分区），
+       散着写就是四次漂开的机会，而「同一件事两种口径」是本项目付过两次账的病。
+     ★★★ 名字里必须带 `team`。**这个函数一开始就叫 `emptyText`，跟下面看板列那个
+       `emptyText(s)` 撞了名** —— 函数声明提升下**后出现的赢**，于是这四处
+       （收件箱浮层 / 发件箱浮层 / 团队视图两分区）拿到的全是**看板列**的文案
+       （「拖任务到这里」），而 `Inbox.EMPTY_*` 那三句话**一个字都没上过屏**。
+       症状：没有报错、没有异常、静态扫描也全绿，只有把文案断言写进测试才看得见。
+       ⇒ 教训不是「小心重名」，是**「新函数的名字必须带得出它属于哪一支」**；
+         同族判据见 `_validate.py` 里的「popup.js 顶层函数声明不得重名」那扇门。 */
+  function teamEmptyText(kind){
+    if (typeof Inbox === "undefined") return "";
+    if (kind === "mine") return (inboxCfg && inboxCfg.on) ? Inbox.EMPTY_MINE : Inbox.EMPTY_OFF;
+    return Inbox.EMPTY_OUT;
+  }
+
+  function teamEmptyEl(text){
+    var e = document.createElement("div");
+    e.className = "holdfly-empty";
+    e.textContent = text;
+    return e;
+  }
+
+  /* 视图按钮上那个总数 —— **任何视图**都要更新：它回答的是「有没有人给你派活」，
+     与你现在站在哪一屏无关。口径 = 两个分区的条数之和，这样
+     「按钮上的数字」与「点进去看到的行数」永远一致
+     （数字和眼前看到的对不上，是最伤信任的一类 —— 与 v0.26.0 那条同源）。 */
+  function renderTeamCount(){
+    var n = inSorted().length + outItems().length;
+    var e = document.getElementById("segTeamN");
+    if (!e) return;
+    e.textContent = n;
+    e.hidden = (n === 0);
+    /* ★★★ 这个数字长在**一个按钮里面**，所以改它一定会改那个按钮的宽度 ——
+       而滑块（`.seg-thumb`）的宽是按「当前按钮」量出来的（`moveSegThumb`）。
+       不重排的话，数字从隐藏变可见（或位数变多）之后，
+       滑块就**比按钮窄**（或位置偏），症状是「选中的那块底色没对齐」。
+       这不是理论风险：计数是**数据回来之后**才对的，而 `syncSeg()`（唯一另一处
+       调 `moveSegThumb` 的地方）跑在它**之前** ——
+       于是「打开弹窗时正好站在团队任务上 + 后台刚拉回几条」这个组合必然错位。
+       ★ 一处修全部：把这个数**永远**当几何变化处理，别去猜这次改没改宽度
+         （`tabular-nums` 只保证同位数等宽，9→10 真的会变宽）。 */
+    moveSegThumb();
+  }
+
+  /* ★★ 团队相关的**异步**数据（`ITK` / `CFK` / 首次 `loadInbox`）到了之后，
+     该刷的一次刷够 —— 三处调用点共用这一处实现。
+     ★ 为什么抽出来：本项目已经为「同一件事两种口径」付过两次账（v0.38.0、v0.39.0），
+       而这里是一个更阴的变体 —— 「同一件事**三处各刷一半**」：
+       漏掉哪一处，症状都长得像「数据没到」（数字不动 / 分区还空），
+       而实际上数据早就在内存里了。**看不见的那一半才是坏的。**
+     ★ 与 `render()` 的分工：`render()` 是「整屏重画」，会重建看板整列 DOM
+       （会打断拖拽、正在就地编辑的卡也会被打断）；这个只补团队那一小块。
+       ⇒ 数据到了但用户不在团队屏上时，**只刷数字**，不重建任何东西。 */
+  function refreshTeamUI(){
+    renderTeamCount();
+    if (st.view === "team") renderTeam();
+  }
+
+  function renderTeam(){
+    var bodyM = document.getElementById("tmBody");
+    var bodyO = document.getElementById("toBody");
+    if (!bodyM || !bodyO) return;
+
+    /* ★★ 「派给我的」= `inboxItems` **本身**，这里**不再筛一次**：
+       后台轮询写 `ITK` 时走的就是 `mineOnly`（inbox.js 的 `pull`）。
+       多筛一道 = 第二个口径，而且它看起来毫无害处 —— 一旦分叉没人查得出来。 */
+    var mine = inSorted();
+    var out = outSorted();
+
+    var cM = document.getElementById("tmCount");
+    var cO = document.getElementById("toCount");
+    if (cM) cM.textContent = mine.length;
+    if (cO) cO.textContent = out.length;
+
+    bodyM.innerHTML = "";
+    bodyO.innerHTML = "";
+    if (!mine.length) bodyM.appendChild(teamEmptyEl(teamEmptyText("mine")));
+    else mine.forEach(function (it) { bodyM.appendChild(inboxCardEl(it, true)); });
+
+    if (!out.length) bodyO.appendChild(teamEmptyEl(teamEmptyText("out")));
+    else out.forEach(function (t) { bodyO.appendChild(outCardEl(t)); });
+
+    /* 底栏：团队视图只回答**团队**的事 —— 本地任务那几段（挂起 / 归档 / 搜索命中）
+       全部让位。不让位的话会出现「团队任务 7 条、底栏写着未完成 3 项」
+       这种一句话里两个口径的句子。 */
+    var statEl = document.getElementById("stat");
+    if (statEl) {
+      statEl.textContent = (inboxCfg && inboxCfg.on)
+        ? ("派给我的 " + mine.length + " · 我派的 " + out.length)
+        : "团队派发还没打开";
+    }
+    var hs = document.getElementById("holdStat"); if (hs) hs.hidden = true;
+    var ab = document.getElementById("archBtn");  if (ab) ab.hidden = true;
+    var hc = document.getElementById("hitCount"); if (hc) hc.textContent = "";
   }
 
   /* ---------- 抽屉里的「派发给」 ---------- */
@@ -2003,7 +2212,22 @@
     if (y < br.top - 14 || y > br.bottom + 14) return null;   // 拖到板子外面去了，不动
 
     var best = null, bestD = Infinity;
-    var cols = document.querySelectorAll(".col");
+    /* ★★★ v0.40.0：这里必须只数**看板的列**（`.col[data-status]`），不能写成 `.col`。
+       团队任务那个容器里也有两个 `.col`（它的两个分区复用了列的皮肤），
+       而它们在「今天」视图下是 `hidden` ⇒ rect 是 **0×0、中心在 (0,0)**。
+       于是「指针落在列外留白上」时，「最近列」会被算成那个**隐藏的 0 宽列**：
+       x=3 时它距离 3，而真的最近列（待办，中心 89）距离 89 —— 它赢。
+       它的 `dataset.status` 是 `undefined` ⇒ `target` 无效 ⇒ 卡片**静默退回原列**，
+       也就是用户说的「拖过去了，它自己又退回来」。
+       ★ 这不是理论风险：真机套件里 ⑭ 那条断言 5/5 打红，量出来的现场就是它
+         （`.col` 数出 5 个，其中两个 `undefined:0-0`）。
+       ★ 为什么原来没这毛病：v0.40.0 之前全项目只有看板那三列是 `.col`。
+         同一个坑在 `clearHighlight()` 里无害（多摘两个不存在的 class），
+         但**落点计算**里它直接改结果。
+       ★ 同族教训：`ALL_STATUSES.indexOf(target)` 那道守卫只是**兜住**了无效 target、
+         并不会报警 —— 无效值被静默吃掉，看起来像「什么都没发生」。
+         所以这里要从**源头**把非状态列排除，而不是靠下游守卫。 */
+    var cols = document.querySelectorAll(".col[data-status]");
     for (var i=0;i<cols.length;i++){
       var r = cols[i].getBoundingClientRect();
       var d = Math.abs(x - (r.left + r.width / 2));
@@ -3566,8 +3790,20 @@
         if (Array.isArray(list) && list.length) projects = list;
         buildSelect(last);
 
+        /* ★★★ v0.40.0：`view` 与「有没有本地任务」**解耦**。
+           改之前这里是 `if (data && data.tasks && data.tasks.length) { st.view = ... }` ——
+           即「一条本地任务都没有」时，**视图偏好整个丢掉**、静默回落「今天」。
+           在 v0.40.0 之前这么写没毛病：四个视图全是「本地任务的一种切法」，
+           没有任务就没有视图可言，回落和记忆是同一件事。
+           但「团队任务」这一屏画的是**别人派给我的 / 我派出去的**，
+           与本地任务列表无关 —— 于是「我本地一条都没有，但我正站在团队任务上」
+           是完全正常的状态（表刚建、刚清空、只想看别人派了什么）。
+           症状：在团队任务视图里关掉弹窗再打开 ⇒ 回到「今天」，
+           而且**看起来像「没记住」**，没人会想到是 boot 里那个 length 判断。
+           ★ 这条是写 ⑧ 段测试时被自己的断言抓出来的（种了 view:"team" + tasks:[]），
+             不是猜的 —— 断言先红了，才回头找到这里。 */
+        if (data) st.view = data.view || "today";
         if (data && Array.isArray(data.tasks) && data.tasks.length) {
-          st.view = data.view || "today";
           st.tasks = data.tasks.map(function(t){
             // 补齐早期版本可能缺的字段
             t.note = t.note || "";
@@ -3640,6 +3876,10 @@
         var ni = changes[Inbox.ITK].newValue;
         inboxItems = Array.isArray(ni) ? ni : [];
         renderInbox();
+        /* ★ v0.40.0：收件箱那扇门上的数字与**团队计数**是两件事，`renderInbox()`
+           只管前者。不补这一下，后台刚拉回来一条派给我的活时，
+           正开着的弹窗上「团队任务」那个数**不动** —— 而人正等着它动。 */
+        refreshTeamUI();
       }
       /* ★ v0.39.0：后台回读完「我派出去的那些」→ 当场并进本地任务并重绘。
          ★ 不接这条的话，用户正开着弹窗时状态不会变（要等下次开弹窗）——
@@ -3663,6 +3903,11 @@
         inboxCfg = Inbox.readCfg(changes[Inbox.CFK].newValue);
         renderInbox();
         if (st.view === "project") render();
+        /* ★ v0.40.0：`CFK` 也决定团队屏那句空态说的是「还没打开」还是
+           「还没有人派任务给你」（`teamEmptyMineText`）—— 开关一动，
+           这两句必须当场换过来；不换的话用户看到的是**上一状态**的解释，
+           而那句解释恰好是在教他「去哪儿打开」。 */
+        refreshTeamUI();
         /* ★ v0.38.3：名单和「我是谁」是**后台轮询**写进来的，而用户很可能正开着
            抽屉 —— 不补这一下，他得先收起抽屉再打开才看得见下拉活过来，
            然后就会觉得「还是灰的」。 */

@@ -719,6 +719,22 @@ body{
 .bd-stack{display:flex;height:10px;border-radius:5px;overflow:hidden;gap:2px;margin:1px 0 9px}
 .bd-stack i{display:block;border-radius:3px}
 
+/* 团队任务的三个「状态类别」列（v0.40.0）—— 三格**并排**，不是三行：
+   它们回答的是同一个问题的三个答案（各有多少条），横向放着才好比。
+   ★ 类别只有三个（Jira 的官方抽象），不要跟着状态数长列 —— 理由见 board.js。 */
+.bd-cols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px}
+.bd-col{
+  display:flex;flex-direction:column;gap:3px;padding:9px 11px;border-radius:9px;
+  background:rgba(150,162,182,.10);min-width:0;
+}
+.bd-ck{font-size:11px;color:var(--ink4);letter-spacing:.05em}
+.bd-cv{
+  font-size:19px;font-weight:500;color:var(--ink);
+  font-variant-numeric:tabular-nums;line-height:1.15;
+}
+.bd-col[data-cat="doing"] .bd-cv{color:var(--accent)}
+.bd-col[data-cat="done"] .bd-cv{color:var(--s-done)}
+
 /* 热力图格子（在 SVG 里，所以是 fill 不是 background） */
 .bd-cell{fill:var(--heat-0)}
 .bd-cell.l0{fill:var(--heat-0)}
@@ -1456,6 +1472,19 @@ body{
           </div>
         </div>
 
+        <!-- 团队任务（v0.40.0 · P0-5 / P0-6）
+             ★ 位置：任务分析之后、近 14 天之前。任务分析是老大拍板过的「本页主角」，
+               「位置就是权重」—— 不去挤它；而团队这块是全页**唯一一块「不是我自己」的数据**
+               （KPI / 任务分析 / 趋势 / 热力 / 关注 全是我的），再往后就要滑出首屏了。
+             ★ 数据源与别处不同：除 `taskboard.v1` 外还读 `Inbox.OUTK`（我派出去的）
+               / `Inbox.ITK`（派给我的）。★ 仍然是**只读** —— 块里没有任何可点的东西
+               （P0-6；`_test_manage.js` 有门钉着「s-board 里零控件」）。
+             ★ 列 = 状态类别三列（未开始/进行中/已完成）+ 按人一行 —— 理由见 board.js。 -->
+        <div class="bd-card">
+          <div class="bd-hd"><b>团队任务</b><span class="sub" id="bdTeamNote"></span></div>
+          <div id="bdTeam"></div>
+        </div>
+
         <div class="bd-card">
           <div class="bd-hd"><b>近 14 天</b><span class="sub" id="bdTrendNote"></span></div>
           <div id="bdTrend"></div>
@@ -1670,7 +1699,7 @@ body{
              真正的版本号由 manage.js 从 manifest 读出来覆盖 ——
              写死在 HTML 里等于第二个版本号出处，manifest 一升版这里就开始说谎，
              而且没有任何症状。 -->
-        <div class="ab-ver"><span id="abVer">v0.39.0</span></div>
+        <div class="ab-ver"><span id="abVer">v0.40.0</span></div>
       </div>
     </section>
 
