@@ -632,18 +632,16 @@ if (chrome.runtime.onMessage) {
           return;
         }
         /* ★ v0.33.0：顺手读一次组员表 —— 「我是谁」「组员名单」那两格输入框删掉
-           之后，这里是设置页**唯一**能验证「名单和本人到底读到没有」的地方。
-           ★ 只读、不写配置：测试就是测试，改配置是设置页 tmKeep 的事。 */
+           之后，这里是设置页**唯一**能验证「名单到底读到没有」的地方。
+           ★ 只读、不写配置：测试就是测试，改配置是设置页 tmKeep 的事。
+           ★ v0.41.0：`got.me` **恒为空**了 —— 「身份」列删掉之后，
+             组员表的读取（`listPeople`）不再负责回答「我是谁」
+             （那件事已经归 `resolveMe`，靠 open_id 答）。所以这里的文案只报人数，
+             不再有「我是『周明』」那一支。 */
         var base = "列齐全（" + names.length + " 列）";
         return Inbox.listPeople(tc).then(function (got) {
           var n = (got.people || []).length;
-          sendResponse({
-            ok: true,
-            detail: base + (got.me
-              ? ("，组员 " + n + " 人，我是「" + got.me + "」")
-              : "，组员表里还没有标「本人」的那一行"),
-            me: got.me
-          });
+          sendResponse({ ok: true, detail: base + "，组员 " + n + " 人", me: "" });
         }, function () {
           sendResponse({ ok: true, detail: base + "，但还没配组员表（点「一键生成」）" });
         });
