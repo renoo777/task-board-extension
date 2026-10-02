@@ -79,6 +79,15 @@
     var a = new Date(s + "T00:00:00"), b = new Date(todayStr() + "T00:00:00");
     return Math.round((a - b) / 86400000);
   }
+  /* ★★ v0.43.0：**它不再返回「已过期」**，只负责把日期说成中文。
+     为什么必须摘干净（而不是"留着反正没人走到"）：
+       这个函数有 5 个调用点，其中 3 个是**日期回显**（搜索命中、改期确认）——
+       在那儿印「已过期」属于**语义串线**：用户搜「日期」是想知道"哪天"，
+       不是想知道"过期了没有"。
+     ★ 而真正出事的是另外 2 个（挂起卡 / 按项目视图）：后加的调用点**顺手复用了**
+       它，于是「日期文案」函数被当成「状态」函数用。
+     ★ 留一行没人走的分支 = 给下一个人留一个现成的坑（本版这个 bug 就是这么来的）。
+       ⇒ 过期一律由 `overdueOf()` + 那个点表达，这里一个字的判断都不留。 */
   function dateLabel(s){
     if (!s) return "未安排";
     var d = diffDays(s);
@@ -87,11 +96,26 @@
     if (d === -1) return "昨天";
     if (d === 2) return "后天";
     if (d > 2 && d < 7) return d + "天后";
-    if (d < 0) return "已过期";
     var p = s.split("-");
     return (+p[1]) + "月" + (+p[2]) + "日";
   }
   function dateRank(s){ return s ? diffDays(s) : 9999; }
+
+  /* ---------- 「这张卡过期了吗」（v0.43.0）----------
+     ★ 过期**只在「还没完成」时才成立**。两个反例各自荒谬：
+       · 已完成 —— 活都交了，它哪天到期不再说明任何事。原来在「按项目」视图里，
+         昨天做完的活今天会印一个「已过期」。老大原话：「这个逻辑就走不通，特别奇怪。」
+       · 挂起   —— 主动放下，再提醒它过期是骚扰。
+     ★★ 判据收窄成**一个函数、多个调用点共用**。不这么写就会重演老形状：
+       v0.21.0 那个右上角的点**判对了**（`done`/`HOLD` 都排除），
+       而挂起卡、「按项目」视图这两处**漏了** —— 同一个判断在三个地方各写一遍，
+       漏一处**零症状**。这正是本版这个 bug 的成因，所以本条的重点不是"改对"，
+       是"以后只有一处可改"。 */
+  function overdueOf(t){
+    if (!t || t.status === "done" || t.status === HOLD) return false;
+    var d = diffDays(t.date);
+    return !isNaN(d) && d < 0;
+  }
 
   // 「今天」视图的过滤规则：
   //   未完成 → 日期 <= 今天（含已过期，过期必须看得见）
@@ -668,6 +692,77 @@
        archived 只在本地生效，飞书那边这条记录照旧，不会产生假冲突。 */
   function isArchived(t){ return !!(t && t.archived); }
 
+  /* ---------- 「这活交出去了吗」（v0.43.0）----------
+     ★★ **判据本体不在这里**，在 `inbox.js` 的 `Inbox.isGivenAway` —— 因为球
+       （`ballpage.js` 的角标）和吉祥物（`notify.js` 开口）也要用同一条，
+       而 `inbox.js` 是**三个 runtime 唯一共用的模块**。这里只是一层同名的薄包装，
+       让本文件读起来不必到处写 `Inbox.` 前缀。
+
+     ★ 「交出去」为什么等于「不属于个人待办」：个人清单回答的是「我现在要做什么」，
+       而一件已经在别人桌上的事留在里面，会让「今天要做几件事」这个数字**永远偏大**，
+       而那正是这个工具最核心的数字。⇒ 交出去的活只在团队视图/发件箱里出现。
+
+     ★★★ `revoked` / `failed` / `sending` **都不算交出去**（白名单，见 `inbox.js` 的
+       判据本体）。本文件里尤其要紧的是 `revoked`：`revokeAssign` 的实现是
+       「**保留 `assign`、只把 `st` 改成 `revoked`**」，判据写成最自然的 `!!t.assign`
+       会把撤回的活**永久藏掉**，比原来的 bug 更糟（原来至少看得见）。
+
+     ★★★★ **兜底不再重写判据。** 本版初稿的 6 个薄包装（本文件 + `ballpage.js` +
+       `notify.js` + `background.js` + `board.js` + `manage.js`）**各自抄了一份**
+       `!!(a && a.to && a.st !== "revoked")` —— 那就是这个 bug 的成因本身
+       （「同一个判断在多处各写一遍」）在收口之后**又长回来一次**。
+       而且抄的那份语义已经是错的：它把「派发失败」的活也当成交出去了。
+       ⇒ 现在只留一句「拿不到就退化成 `false`」——**安全方向**（宁可多显示一条，
+       不可把活藏掉），并且**门盯着本函数体里不许再出现 `recorded` / `failed` /
+       `a.to` 这类判据字面量**（G11）。谁把判据抄回来，门就红。
+
+     ★ 与 `isArchived` 并列：两者都回答「这条任务该不该出现在个人清单里」，
+       只是理由不同（一个是我收起来了，一个是我交出去了）。 */
+  function isGivenAway(t){
+    if (typeof Inbox === "undefined" || !Inbox.isGivenAway) return false;
+    return Inbox.isGivenAway(t);
+  }
+
+  /* ---------- 「这条算我的『我派的』那一摞吗」（v0.43.0）----------
+     ★★★★ **与上面那个是两件事**，别合并（初稿合并过，是一个真 bug）：
+       `isGivenAway` 过滤**个人视图**；`isOutgoing` 填**「我派的」那一摞**。
+       `failed`（派发失败）与 `sending`（派发中）在两边**答案正好相反** ——
+       没离开我的手（要留在个人视图）**但**我确实派过（要出现在「我派的」里）。
+       ★ 后者不是口味问题：「重派一次」那颗按钮**只画在「我派的」那一行上**，
+         排除掉 = 派发失败之后**再没有任何地方能重派**。
+     ★ 判据本体在 `inbox.js`（`Inbox.isOutgoing`），本函数只是一层薄包装；
+       退化方向与上面那条一致 —— 拿不到就 `false`（**安全方向**）。 */
+  function isOutgoing(t){
+    if (typeof Inbox === "undefined" || !Inbox.isOutgoing) return false;
+    return Inbox.isOutgoing(t);
+  }
+
+  /* ---------- 「我手头的活」（v0.43.0）----------
+     = 未归档、且还没交出去。**全项目唯一的「我的活」口径。**
+     底栏计数、三个个人视图、挂起浮层、归档已完成的判定、「按项目」批量派发的候选集，
+     全部走它。
+
+     ★★ 为什么要抽这一层，而不是在哪里用就在哪里写两个 `!`：
+       「未归档 + 未交出」这个组合在本版初稿里出现在 **6 处**，而 PRD 当初只列了 3 处。
+       另外 3 处（`outItems` / `clearDone` 的两个条件 / `runProjDispatch` 的候选集）
+       是**量现场**时逐个找出来的 —— 漏掉它们**不会报任何错**，
+       只会让「看得见的」和「动得了的」悄悄对不上：
+         · `outItems` 漏 ⇒ 「发件箱说交出去了、个人视图说还在我手上」；
+         · `clearDone` 漏 ⇒ 看得见 2 条、点一下说归档了 3 条；
+         · `runProjDispatch` 漏 ⇒ 列表里看不见的活被批量改派给别人。
+       这三条都是同一个形状：**同一个判断在多处各写一遍，改的时候只改到一半。**
+       ⇒ 收口成一个函数，改坏了是**一起**坏（门盯得住），不会一半对一半错。
+
+     ★ 注意方向：`isGivenAway` 是「交出去了吗」，这里是「还在我手上吗」——
+       两者互为反面，**都保留**：`outItems` 要的是前者，其余要的是后者。
+       写成一个、在别处加 `!` 会让人读的时候要绕一圈（`!isGivenAway` 出现在 6 个地方，
+       总有一天有人手滑少写一个 `!`，而那种错**语法完全合法**）。 */
+  function myTasks(){
+    return (st.tasks || []).filter(function(t){
+      return !isArchived(t) && !isGivenAway(t);
+    });
+  }
+
   /* ---------- 搜索 ----------
      命中标题或备注。★ 不用 innerHTML 拼高亮：标题/备注是用户输入，拼 HTML 就是注入。 */
   function hitTask(t, q){
@@ -789,13 +884,20 @@
   /* 哪些任务出现在看板上。
      ① 归档的一律不出现（它是「收起来」，不是「删掉」）；
      ② 正在搜索时**忽略视图筛选** —— 搜索的目的就是「把找不回来的东西找回来」，
-        还守着「今天」这一格等于白搜。 */
+        还守着「今天」这一格等于白搜。
+     ★★★ v0.43.0：交出去的活（`isGivenAway`）也不出现。
+       **这一处是全项目个人视图的唯一出口**（「今天 / 按日期 / 按项目」三个视图
+       共用它，见 `render()`）。为什么必须收在这一处、不逐视图加条件：
+       逐视图改要写 5 处（今天 / 按日期 / 按项目 / 挂起浮层 / 底栏计数），
+       少写一处就会出现「按日期藏了、按项目没藏」—— 而**那种不一致正是本版这个
+       bug 的形态本身**（同一条任务在两套视图里各露一次脸）。
+       收口一处的收益是**验收能一句话证完**：个人视图取数的唯一入口带判据。 */
   function visibleTasks(){
     if (searching) {
-      return st.tasks.filter(function(t){ return !isArchived(t) && hitTask(t, searching); });
+      return myTasks().filter(function(t){ return hitTask(t, searching); });
     }
-    var vis = st.view === "today" ? st.tasks.filter(inToday) : st.tasks;
-    return vis.filter(function(t){ return !isArchived(t); });
+    var list = myTasks();
+    return st.view === "today" ? list.filter(inToday) : list;
   }
 
   function render(){
@@ -820,8 +922,10 @@
        **不匹配**的挂起任务也算成命中 —— 搜一个词明明只出来 2 张卡，却说命中 3 项，
        而第 3 条还得点开挂起浮层才找得到。数字和眼前看到的对不上，是最伤信任的一类。
        （这个 bug 是出验收图时盯着底栏数字发现的：当时的种子数据里没有挂起项，测试没覆盖到。） */
-    var holds = st.tasks.filter(function(t){
-      return t.status === HOLD && !isArchived(t) && (!searching || hitTask(t, searching));
+    /* ★ v0.43.0：挂起浮层同样要排除「交出去的活」—— 它是**个人**停车场，
+       一辆已经开走的车不该还占着车位。 */
+    var holds = myTasks().filter(function(t){
+      return t.status === HOLD && (!searching || hitTask(t, searching));
     });
 
     var cmp = cmpInCol(st.view === "project" ? byProject : byDate);
@@ -867,8 +971,14 @@
        ★ 底栏从此只回答一个问题：**现在手头是什么状况**。
          回顾、鼓励、替用户下判断的话，都不属于这里。 */
 
-    /* 底栏：「未完成」不含挂起（挂起是停车场，不算手头的活），也不含已归档。 */
-    var live = st.tasks.filter(function(t){ return !isArchived(t); });
+    /* 底栏：「未完成」不含挂起（挂起是停车场，不算手头的活），也不含已归档。
+       ★ v0.43.0：也不含「交出去的活」。`live` 是底栏三处**共用的基础集合**
+         （`open` 计数 / `doneLive` 可归档数 / `live.length === 0` 判空），
+         改这一处三处一起对。
+         ★ 特别是 `doneLive`：漏了它，一条「派出去 + 已完成」的活会让
+           「归档已完成」按钮冒出来，而点下去会把一条**用户根本看不见的**任务归档掉
+           —— 看得见的和动得了的对不上，是最伤信任的一类。 */
+    var live = myTasks();
     var open = live.filter(function(t){ return t.status !== "done" && t.status !== HOLD; }).length;
     var statEl = document.getElementById("stat");
     if (searching) {
@@ -1202,13 +1312,19 @@
        迟早会出现，而用户只会觉得这两个数字里有一个是假的。
        ⇒ 弹窗侧一行判定都不留，全交给 `Inbox.staleOf`。 */
 
+  /* ★★★★ v0.43.0：这一摞走 **`isOutgoing`**，不是 `isGivenAway` —— 它们是**两个问题**。
+     初稿把它收口成 `filter(isGivenAway)`（在「收口」这面旗帜下写的，所以格外值得记）：
+     `isGivenAway` 是**白名单**（只认确定到了对方手上那三档），于是
+     `failed`（派发失败）/ `sending`（派发中）会被**排除**在「我派的」之外 ——
+     而「重派一次」那颗按钮只画在这一行上（`outCardEl` 里的 `re`），
+     排除掉就等于**失败之后再没有任何地方能重派**。
+     ★ 原来这里写的是 `!!(a && a.to && a.st !== "revoked")`（与 `isGivenAway` 的黑名单版
+       恰好逐字相同，所以「看着像同一件事」）—— 收口成 `isGivenAway` 白名单版之后，
+       两个问题的答案第一次**分开**了，这才是它们的真面目。
+     ★ 判据本体在 `inbox.js`（`Inbox.isOutgoing`），本函数只是薄包装
+       （与 `isGivenAway` 并排，两个名字放在一起才看得出「它们不是一个东西」）。 */
   function outItems(){
-    return (st.tasks || []).filter(function (t) {
-      var a = t && t.assign;
-      /* ★ 撤回的**不再出现在这儿**（P0-6）：本地标记为终态，
-         但团队表那一行照旧保留（远程删除不可逆）。 */
-      return !!(a && a.to && a.st !== "revoked");
-    });
+    return (st.tasks || []).filter(isOutgoing);
   }
 
   /* 状态徽标 —— **全项目唯一的画法**（任务抽屉、发件箱浮层、团队视图三处都用它）。
@@ -1809,8 +1925,13 @@
      ★ 一条失败**不中断**：剩下的继续派，最后把成败一起说 —— 半路停下的话
        用户不知道剩下的到底派出去了没有。 */
   function runProjDispatch(proj, who){
-    var mine = st.tasks.filter(function(t){
-      return t.project === proj && t.status !== "done" && t.status !== HOLD && !isArchived(t);
+    /* ★ v0.43.0：`mine` 要真的是「我的」—— 交出去的活不算。
+       不加这一条会怎样：用户在「按项目」视图里点「派发给小王」，
+       而这个视图**已经不再显示**那些派出去的活，
+       于是他会看到「派 3 条」实际却把小张已经在做的那 2 条**抢给了小王**
+       （同名同项目，谁也没报错）。列表里看不见的东西不该被批量动到。 */
+    var mine = myTasks().filter(function(t){
+      return t.project === proj && t.status !== "done" && t.status !== HOLD;
     });
     if (!mine.length) return;
     Sync.readCfg().then(function(sc){
@@ -1843,7 +1964,11 @@
 
   function emptyText(s){
     if (searching) return "没有命中的";
-    if (st.tasks.length === 0 && s === "todo") return "在上面输入框记第一笔";
+    /* ★ v0.43.0：「是不是一条都没有」要按**我手头的活**算，不能按 `st.tasks.length`。
+       否则「活全派出去了」的那种人，待办列空着却说「今天没有这一项」，
+       而底栏（走 `myTasks`）说的是「还没有任务」—— 同一屏两句话互相打架。
+       原判据 `st.tasks.length === 0` 在本地还留着派出去那几条时恒为假。 */
+    if (s === "todo" && myTasks().length === 0) return "在上面输入框记第一笔";
     if (s === "done") return st.view === "today" ? "今天还没完成项" : "拖到这里算完成";
     return st.view === "today" ? "今天没有这一项" : "拖任务到这里";
   }
@@ -1867,7 +1992,11 @@
        ★ 判据用 diffDays 而不是拿日期字符串比大小 —— 日期是本地时区的
          "YYYY-MM-DD"，字符串比较只在同年同月同位数时才等价，跨年就会错。
        ★ 这里不再区分视图：原来那三个字只在「今天 / 按日期」两个视图里出现，
-         而「这张卡过期了没有」是个**与视图无关的事实**。 */
+         而「这张卡过期了没有」是个**与视图无关的事实**。
+       ★★ v0.43.0 附注：下面这个 `done` / `HOLD` 前置条件与 `overdueOf()` 的**完全同源** ——
+         两者的区别只在「要不要把『今天到期』也算进去」。**改一处必须看另一处。**
+         （这一段本身是本版**唯一没有改**的过期相关代码：它 v0.21.0 就判对了，
+           本版修的是它旁边两处漏网的。） */
     if (t.status !== "done" && t.status !== HOLD) {
       var dd = diffDays(t.date);
       if (!isNaN(dd) && dd <= 0) {
@@ -1888,7 +2017,12 @@
 
     var meta = document.createElement("div");
     meta.className = "cmeta";
-    var overdue = !isNaN(diffDays(t.date)) && diffDays(t.date) < 0;
+    /* ★★ v0.43.0：改成 `overdueOf(t)`，它自带「已完成 / 挂起 ⇒ 不成立」的判断。
+       原来这里写的是 `diffDays(t.date) < 0`（**完全不看 status**），
+       于是「昨天做完的活」今天在「按项目」视图里被染成过期色 —— 老大报的就是这个。
+       ★ 挂起卡的日期**照常显示**（挂起要看"搁了多久"），只是不再由它表达"过期"：
+         过期一律交给 `overdueOf` + 右上角那个点。 */
+    var overdue = overdueOf(t);
 
     if (t.status === HOLD) {
       // 挂起卡：显示日期，方便判断「搁了多久」。日期本身可点 → 快速改期
@@ -3273,12 +3407,24 @@
   /* 「归档已完成」——★ 不是「清空」。
      老大明确说过「我不需要有清空数据的这个选项」。这里打的是本地归档标记：
      数据一条不删地留在 storage 里（导出 JSON 能看到），只是不再占着已完成列。
-     底栏那个「恢复归档 N」只在真有归档时才出现，平时不占位置。 */
+     底栏那个「恢复归档 N」只在真有归档时才出现，平时不占位置。
+     ★★★ v0.43.0：**两处条件必须与底栏 `doneLive` 同口径**（都排除交出去的活）。
+       原因不是"整齐"，是**不改就会当场露馅**：
+       按钮的**可见性**由 `doneLive` 决定（它已排除派出去的），
+       而按钮**实际归档**的条数由这里的 `n` 决定。不同口径就出现
+       「看得见 2 条已完成，点一下说已归档 3 条」——
+       多出来的那条用户**根本看不见**，却被动了。看得见的和动得了的对不上，
+       是最伤信任的一类（底栏那条注释里写过同一句话）。
+       ⇒ 改一处必须改另一处，这类"平行判据"要靠门钉住，不能靠记性。 */
   document.getElementById("clearDone").addEventListener("click", function(){
-    var n = st.tasks.filter(function(t){ return t.status === "done" && !isArchived(t); }).length;
-    if (!n) return;
-    var touched = [];
-    st.tasks.forEach(function(t){ if (t.status === "done" && !isArchived(t)) { t.archived = true; touched.push(t); } });
+    /* ★ v0.43.0：**一次 `myTasks()` 取到候选集，计数与动作共用同一个数组** ——
+       原来是两处各写一遍同样的条件（`n` 一处、`touched` 一处）。它们今天一致，
+       但那是"恰好一致"：改一处忘另一处就会出现「说归档 3 条、实际归档 2 条」。
+       共用数组之后，**物理上不可能不一致**。 */
+    var touched = myTasks().filter(function(t){ return t.status === "done"; });
+    if (!touched.length) return;
+    var n = touched.length;
+    touched.forEach(function(t){ t.archived = true; });
     save().then(function(){
       render();
       toast("已归档 " + n + " 条（数据还在，可恢复）", "撤销", function(){

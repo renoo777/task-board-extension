@@ -189,7 +189,15 @@
     }
 
     projects.forEach(function(p, idx){
-      var used = st.tasks.filter(function(t){ return t.project === p.name && t.status !== "done"; }).length;
+      /* ★ v0.43.0：与看板的「按项目」口径对齐 —— 派出去的活不是我的**待办**。
+         这里显示的是「N 项待办」（设置页项目列表），不改就会出现
+         「设置页说项目 A 有 5 项待办、看板按项目说 3」。
+         ★ 只加「交出去的」这一条，**不动 `status !== "done"` 那个口径** ——
+           它含 doing / hold 是既有行为（"待办"在这里是泛指未完成），
+           那是另一个话题，不该混在修 bug 的这一版里顺手改掉。 */
+      var used = st.tasks.filter(function(t){
+        return t.project === p.name && t.status !== "done" && !givenAway(t);
+      }).length;
 
       var row = document.createElement("div");
       row.className = "prow";
@@ -281,21 +289,40 @@
     if (n) document.getElementById("archNum").textContent = "已归档 " + n + " 条";
   }
 
+  /* 「这条任务交出去了吗」的薄包装（v0.43.0）。
+     ★ 判据本体在 `Inbox.isGivenAway`（`manage.html` 里 `inbox.js` 排在 `manage.js` 之前）。
+     ★★★★ 退化路径**不再重写判据**（本版初稿在这 6 个文件里各抄了一份，语义还抄错了：
+       `st !== "revoked"` 会把「派发失败」的活当成已交出去）。拿不到就返回 `false` ——
+       **安全方向**（宁可多算一件，不可把活藏掉）。
+       门（G11）盯着本函数体里不许再出现 `recorded` / `failed` / `a.to` 这类判据字面量。 */
+  function givenAway(t) {
+    if (typeof Inbox === "undefined" || !Inbox.isGivenAway) return false;
+    return Inbox.isGivenAway(t);
+  }
+
   function renderStat(){
     var total = st.tasks.length;
-    // 未完成/挂起/进行中都只看「还在看板上」的，归档的单独报数（否则数字和看板对不上）
-    var live = st.tasks.filter(function(t){ return !t.archived; });
+    /* 未完成/挂起/进行中都只看「还在看板上」的，归档的单独报数（否则数字和看板对不上）
+       ★★ v0.43.0：还要排除「交出去的活」。上面那句「否则数字和看板对不上」
+         正是本版要守住的事 —— 看板的 `live` 已经排除了它们，
+         这里不排除就会变成「看板说在手 6、设置页说未完成 8」。 */
+    var live = st.tasks.filter(function(t){ return !t.archived && !givenAway(t); });
     // 「未完成」不含挂起 —— 挂起的东西不该算在手头的活里
     var open = live.filter(function(t){ return t.status !== "done" && t.status !== HOLD; }).length;
     var doing = live.filter(function(t){ return t.status === "doing"; }).length;
     var hold = live.filter(function(t){ return t.status === HOLD; }).length;
     var arch = archCount();
+    /* ★★ 已完成**直接数**，不再用 `total − open − hold`：
+       那个公式会把「交出去的」也算成已完成（`total` 含它们，而 `open`/`hold` 不含）。
+       「已完成」要表达的是「完成过多少条」，含归档（归档的都是已完成）。
+       ★ 与 `board.js` 的 `doneAll` 同一个公式 —— 两处必须一致（它们本来就该对得上）。 */
+    var done = st.tasks.filter(function(t){ return t.status === "done"; }).length;
     document.getElementById("stat").textContent =
       total === 0 ? "当前没有任何任务。"
       : "共 " + total + " 条任务，未完成 " + open + " 条（进行中 " + doing + " 条）"
         + (hold ? "，挂起 " + hold + " 条" : "")
         // 已完成含归档（归档的都是已完成），后面再单独标出其中多少条被收起来了
-        + "，已完成 " + (total - open - hold) + " 条"
+        + "，已完成 " + done + " 条"
         + (arch ? "，已归档 " + arch + " 条" : "");
   }
 

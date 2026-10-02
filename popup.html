@@ -685,7 +685,13 @@ body.dragging-on .holdfly{pointer-events:none}
    ★ 位置就是 .del 那个角（top:4px right:4px）——**不冲突**：
      .del 是 opacity:0、hover 才现身，静止态这里本来就是空的。
    ★ 三档：未到期＝不挂（角上留空）/ 今天到期＝橙点 / 已过期＝红点套声波环。
-     「今天」这一档以前跟「未来」一样完全没标记，等于白丢了一天的时间信息。 */
+     「今天」这一档以前跟「未来」一样完全没标记，等于白丢了一天的时间信息。
+   ★★ v0.43.0 补记：「已过期」这三个字**到此彻底消失**——
+     `dateLabel()` 最后那行 `if (d < 0) return "已过期";` 已删。原因：挂起卡与
+     「按项目」视图当时是**复用这个日期文案函数当状态用**的，于是「昨天做完的活」
+     今天会印「已过期」（老大报的 bug：逻辑走不通）。
+     ⇒ **「过期」现在只有这一个点在表达**，任何地方都不许再用文字说它
+       （`popup.js` 里的 `overdueOf()` 是唯一的判据，它只管"该不该出现这个点"）。 */
 .card .cdot{
   position:absolute;top:6px;right:7px;width:7px;height:7px;border-radius:50%;
   pointer-events:none;transition:opacity .12s;

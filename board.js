@@ -166,18 +166,42 @@
      纯函数是这道题的**可测性**所在：喂进去一组任务，出来的每个数字都能
      在测试里逐条对。渲染层只负责把数字摆到该摆的地方。
      ★ 这里不碰 DOM、不碰 storage —— 所以 _test_board.js 能直接调它。 */
+  /* 「这条任务交出去了吗」的薄包装（v0.43.0）。
+     ★ 判据本体在 `Inbox.isGivenAway` —— `manage.html` 里 `inbox.js` 排在 `board.js` 之前，
+       运行时取得到；`_test_board.js` 也是**先 eval inbox.js 再 eval board.js**（两边一致）。
+     ★★ 它保持 `compute` 的**纯函数**性质：不碰 storage、不碰 DOM。
+     ★★★★ 退化路径**不再重写判据** —— 初稿那句「留退化路径是为了 `_test_board.js`」
+       本身就已经过期了（那个测试早就把 `inbox.js` 一起 eval 进来了）。而且抄的那份
+       `st !== "revoked"` 是**错的**：它把「派发失败」的活也当成交出去了。
+       拿不到就返回 `false`：**安全方向**（宁可多算一件，不可把活藏掉）。
+       门（G11）盯着本函数体里不许再出现 `recorded` / `failed` / `a.to` 这类判据字面量。 */
+  function givenAway(t) {
+    if (typeof Inbox === "undefined" || !Inbox.isGivenAway) return false;
+    return Inbox.isGivenAway(t);
+  }
+
   function compute(tasks, projs, team) {
     tasks = Array.isArray(tasks) ? tasks : [];
     projs = Array.isArray(projs) ? projs : [];
     var today = todayStr();
-    var live = tasks.filter(function (t) { return !t.archived; });
+    /* ★★★ v0.43.0：`live` 加上「还没交出去」。这一条是**整块看板的数据源** ——
+       在手 / 未完成 / 逾期 / 今天到期 / 按项目 / 按优先级 / 关注列表
+       全都从它派生，所以改这一处，上面那一片一起对。
+       ★ 为什么看板也算「个人待办」：老大原话是「派发的任务还在我的**个人待办数据**
+         里面」—— 他说的不是弹窗那一屏，也包括这个看板上的「在手 N 条」。
+         两处不同口径就会变成「看板说在手 8、弹窗说今天 6」，
+         而这类数字对不上是最伤信任的一类（`notify.js` 抬头也为它定过性）。 */
+    var live = tasks.filter(function (t) { return !t.archived && !givenAway(t); });
 
     var done = live.filter(function (t) { return t.status === "done"; });
     var doing = live.filter(function (t) { return t.status === "doing"; });
     var hold = live.filter(function (t) { return t.status === HOLD; });
     /* ★ 未完成不含挂起 —— 挂起的东西不该算在手头的活里（与 renderStat 同口径） */
     var open = live.filter(function (t) { return t.status !== "done" && t.status !== HOLD; });
-    var arch = tasks.length - live.length;
+    /* ★★ 归档数**必须直接数 `t.archived`**，不能再用 `tasks.length - live.length`：
+       `live` 现在少了「交出去的」那一类，两者相减会把派出去的活**算成归档** ——
+       而那个数字看着还挺合理，所以不会有人发现。 */
+    var arch = tasks.filter(function (t) { return !!t.archived; }).length;
 
     /* --- 逾期：有声明的截止日、且那天已经过去了、且还没完成 --- */
     var overdue = live.filter(function (t) {
@@ -337,8 +361,11 @@
          只留一个的话，另一个地方势必要就地重算，迟早算岔成两个数。 */
       done: done.length,
       /* 用 tasks.length 现算，别引用上面那个键名 —— `total` 只是返回对象的键，
-         在同一个字面量里它不是变量（这里踩过一次 ReferenceError）。 */
-      doneAll: tasks.length - open.length - hold.length,
+         在同一个字面量里它不是变量（这里踩过一次 ReferenceError）。
+         ★★ v0.43.0：改成**直接数完成条数**，不再用 `tasks.length − open − hold` ——
+           那个公式会把「交出去的」也算成已完成（`tasks.length` 含它们，
+           而 `open` / `hold` 现在都不含）。它要表达的是「完成过多少条（含归档）」。 */
+      doneAll: tasks.filter(function (t) { return t.status === "done"; }).length,
       donePct: live.length ? Math.round(done.length / live.length * 100) : 0,
       open: open.length, doing: doing.length, hold: hold.length,
       overdue: overdue.length, dueToday: dueToday.length,
@@ -566,6 +593,13 @@
     if (!t.on) return empty(Inbox.EMPTY_OFF);
     if (!t.synced) return empty("团队任务还没同步过 —— 打开一次弹窗、或等后台跑一轮就有了");
     var cols = CAT_ORDER.map(function (k) {
+      /* ★ v0.42.0：从「上下结构」改成「左右结构」——列名在左、计数徽标在右。
+         参考图（老大发来的看板截图）的做法：数字带独立圆角底，扫读时**先看到数字**。
+         ★ 数量 `0` 照常渲染（不隐藏）——「真没有」要说得出；
+           它与「没同步过 ⇒ 不显示 0」是**两个相反方向**的判据，都要成立（见 teamBlock 抬头）。
+         ★ 顺序上是 `bd-ck`（名）在前、`bd-cv`（数）在后：DOM 顺序即视觉顺序，
+           右对齐靠 CSS 的 `margin-left:auto`，不靠 `flex-direction:row-reverse`
+           —— 后者会让**读屏顺序**也反过来（名字念在数字后面），那是个隐藏的可访问性坑。 */
       return '<div class="bd-col" data-cat="' + k + '">' +
         '<span class="bd-ck">' + esc(Inbox.CAT_TEXT[k]) + "</span>" +
         '<b class="bd-cv">' + t.cols[k] + "</b></div>";

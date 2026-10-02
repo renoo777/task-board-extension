@@ -723,17 +723,34 @@ body{
    它们回答的是同一个问题的三个答案（各有多少条），横向放着才好比。
    ★ 类别只有三个（Jira 的官方抽象），不要跟着状态数长列 —— 理由见 board.js。 */
 .bd-cols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px}
+/* ★ v0.42.0：列头改成「左右结构」——列名在左、计数徽标在右。
+   参考图（老大发来的看板截图）的做法：数字带独立圆角底，扫读时**先看到数字**。
+   ★ 为什么用 `margin-left:auto` 而不是 `flex-direction:row-reverse`：
+     后者会让读屏顺序也变成「先念数字再念名字」，把可访问性坑埋进去。
+   ★★ 数字字色**一律用 `--ink`，四档不分开着色**（原来 doing/done 两档染 `--accent`/`--s-done`）。
+     实测（算过，不是估的）：14px/500 属于「正文」⇒ WCAG 要求 ≥4.5:1，而那两档彩色字
+     对徽标底只有 **2.4~3.3:1**（亮暗都不过）。改成「彩色只染底、字用 --ink」之后
+     全部 ≥**7.7:1**（亮色 12.2 起、暗色 7.7 起），**且零新增色值** ——
+     颜色信息由**底色**承担，字色恒定不随档位波动。
+     ★ 底色仍是**半透明**（`rgba(...,.20)`）而不是实色：它自己会跟着主题走，
+       不需要在 `theme.css` 里加键 —— 少一处「漏加就暗底看不见」的地方（历史事故形态）。 */
 .bd-col{
-  display:flex;flex-direction:column;gap:3px;padding:9px 11px;border-radius:9px;
+  display:flex;flex-direction:row;align-items:center;gap:8px;
+  padding:8px 10px;border-radius:9px;
   background:rgba(150,162,182,.10);min-width:0;
 }
-.bd-ck{font-size:11px;color:var(--ink4);letter-spacing:.05em}
+.bd-ck{font-size:11px;color:var(--ink4);letter-spacing:.05em;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bd-cv{
-  font-size:19px;font-weight:500;color:var(--ink);
-  font-variant-numeric:tabular-nums;line-height:1.15;
+  margin-left:auto;flex:0 0 auto;
+  min-width:24px;height:22px;padding:0 7px;border-radius:11px;
+  display:inline-flex;align-items:center;justify-content:center;
+  font-size:14px;font-weight:500;line-height:1;color:var(--ink);
+  font-variant-numeric:tabular-nums;
+  background:rgba(150,162,182,.22);
 }
-.bd-col[data-cat="doing"] .bd-cv{color:var(--accent)}
-.bd-col[data-cat="done"] .bd-cv{color:var(--s-done)}
+.bd-col[data-cat="doing"] .bd-cv{background:rgba(107,121,218,.20)}
+.bd-col[data-cat="done"] .bd-cv{background:rgba(142,136,184,.20)}
 
 /* 热力图格子（在 SVG 里，所以是 fill 不是 background） */
 .bd-cell{fill:var(--heat-0)}
@@ -1706,7 +1723,7 @@ body{
              真正的版本号由 manage.js 从 manifest 读出来覆盖 ——
              写死在 HTML 里等于第二个版本号出处，manifest 一升版这里就开始说谎，
              而且没有任何症状。 -->
-        <div class="ab-ver"><span id="abVer">v0.41.0</span></div>
+        <div class="ab-ver"><span id="abVer">v0.43.0</span></div>
       </div>
     </section>
 

@@ -437,8 +437,24 @@
 
   /* ================================================================ 数据 */
 
-  function isLive(t) { return !t.archived; }
+  /* ★ v0.43.0：`isLive` 加上「还没交出去」—— 角标是**球上唯一的数字**，
+     它必须与弹窗底栏同口径。不改就会出现「球上 3、弹窗 2」，
+     而这类数字不一致用户一定会看见（`notify.js` 抬头已为同类问题定过性）。
+     ★ 判据本体在 `Inbox.isGivenAway`（三个 runtime 唯一共用的模块），这里不另写一份。 */
+  function isLive(t) { return !t.archived && !givenAway(t); }
   function isOpen(t) { return t.status === "todo" || t.status === "doing"; }
+
+  /* 薄包装。★ `Inbox` 在 content script 里一定在（manifest 的 js 数组里
+     `inbox.js` 排在 `ballpage.js` 之前），但 `HAS_CHROME` 的测试环境可能没有它。
+     ★★★★ 退化路径**不再重写判据** —— 本版初稿在 6 个文件里各抄了一份
+       `!!(a && a.to && a.st !== "revoked")`，既有「多处各写一遍」的老毛病，
+       语义也已经是错的（会把「派发失败」的活当成交出去了）。
+       现在拿不到就返回 `false`：**安全方向**（宁可多显示一条，不可把活藏掉）。
+       门（G11）盯着本函数体里不许再出现 `recorded` / `failed` / `a.to` 这类判据字面量。 */
+  function givenAway(t) {
+    if (typeof Inbox === "undefined" || !Inbox.isGivenAway) return false;
+    return Inbox.isGivenAway(t);
+  }
 
   function openCount() {
     return state.tasks.filter(function (t) { return isLive(t) && isOpen(t); }).length;

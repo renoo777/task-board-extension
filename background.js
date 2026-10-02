@@ -130,6 +130,18 @@ function addTask(title, url) {
   });
 }
 
+/* 「这条任务交出去了吗」的薄包装（v0.43.0）。
+   ★ 判据本体在 `Inbox.isGivenAway` —— `importScripts` 里 `inbox.js` 排在最后，
+     所以只能**运行时**取，不能在顶层取。
+   ★★★★ 退化路径**不再重写判据**（本版初稿在这 6 个文件里各抄了一份，语义还抄错了：
+     `st !== "revoked"` 会把「派发失败」的活当成已交出去）。拿不到就返回 `false` ——
+     **安全方向**（宁可多算一件，不可把活从角标里抹掉）。
+     门（G11）盯着本函数体里不许再出现 `recorded` / `failed` / `a.to` 这类判据字面量。 */
+function isGivenAway(t) {
+  if (typeof Inbox === "undefined" || !Inbox.isGivenAway) return false;
+  return Inbox.isGivenAway(t);
+}
+
 /* ---------- 图标角标：未完成数 ----------
    挂起(status==="hold")不算 —— 挂起的意思就是「这事先不占我的心力」，
    再把它算进角标数字里，等于白挂。 */
@@ -139,8 +151,29 @@ function updateBadge() {
     var n = (d && d.tasks) ? d.tasks.filter(function (t) {
       /* ★ v0.32.0：派发出去的**不计入角标**。角标的意思是「我还有几件没干」，
          已经交出去的活不占这个数 —— 它现在占的是别人的。
-         （本地那条任务仍然留着，只是不计数；见 inbox.js 抬头 ①。） */
-      if (t.assign && t.assign.to) return false;
+         （本地那条任务仍然留着，只是不计数；见 inbox.js 抬头 ①。）
+
+         ★★★ v0.43.0：判据**收口到 `Inbox.isGivenAway`**。
+           原来这里是 `if (t.assign && t.assign.to) return false;` ——
+           它**漏了 `revoked`**：撤回的活又回到我手上了，本该重新计入角标，
+           却因为 `assign` 还留着（撤回只改 `st`、不删 `assign`）被**永远排除**。
+           这是一个从 v0.32.0 起就存在、且**零症状**的静默 bug ——
+           撤回是低频操作，没人对着角标数过。
+
+         ★★ 这条同时是「唯一口径」价值的实证：同一个判断在本项目里
+           至少有**三种不等价的写法** ——
+             · 这里        `t.assign.to`（不看 `st` ⇒ 漏 `revoked`）
+             · `stBadge`   `Inbox.assignState`（看 `st`，但从不用于过滤）
+             · 个人视图    **一处都没看**（老大报的那个 bug）
+           三者本该是同一件事，而它们的行为并不相同。 */
+      if (isGivenAway(t)) return false;
+      /* ★ v0.43.0 顺带统一：**归档的也不算**。
+         这里原来少了这一条 ⇒ 已归档的未完成任务会被算进角标，
+         而球角标 / 弹窗底栏 / 后台看板 / 气泡**四处都不算**（它们都排除了归档）。
+         角标是「我还有几件没干」，收起来的东西不该占这个数。
+         ★ 这是本版找出的第 4 处「同一件事写法不同」——
+           它不在老大报的那两条里，是同一次收口顺手对齐的。 */
+      if (t.archived) return false;
       return t.status !== "done" && t.status !== "hold";
     }).length : 0;
     chrome.action.setBadgeText({ text: n ? String(n) : "" });
