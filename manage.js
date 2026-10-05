@@ -31,6 +31,12 @@
      ★ 这个 key 只在设置页读写：后台的 storage 取值清单里**没有**它
        （跟 LIBKEY 同一个规矩），设置页是唯一的写入方。 */
   var ARCKEY = (typeof Inbox !== "undefined" && Inbox.LOGK) ? Inbox.LOGK : "taskboard.inbox.log";
+  /* ★ 壁纸配置（v0.44.0）。**独立 key，不并进 PREFKEY** —— 理由与 WBKEY 那条一字不差：
+     Store.set 是整块覆盖，并进 prefs 的话拨一下「识别句子」就会把壁纸选择抹回默认。
+     ★ 形状：{ pick:"wall1"|"wall2"|"wall3"|"off", dark:bool }。
+       dark = 「暗色下也手动开了壁纸」（PRD P0-5：暗色默认关，开了就强制压深色纱）。
+     ★ 这个 key 只在设置页读写：后台的 storage 取值清单里没有它（同 LIBKEY 的规矩）。 */
+  var WALLKEY = "taskboard.wall";
   /* ★★★ v0.32.0 事故：下面那个 `tmKeep` 原来**没在这儿声明**，直接在 wireTeam 里
      写了一句 `tmKeep = function (patch) {...}`。本文件是 `"use strict"`，
      **给没声明过的变量赋值会抛 ReferenceError** —— 而赋值点正好在启动那一串
@@ -106,6 +112,28 @@
        不一致的症状是「设置页显示开着、网页上却没有球」。 */
   function readWb(v){
     return !(v && v.on === false);
+  }
+
+  /* 壁纸配置读取（v0.44.0）。认不出的值一律回落默认「开 + wall1」——
+     PRD §6.5：连读取失败都退回默认开。这功能默认关 = 装了跟没装一样。 */
+  function readWall(v){
+    var ok = { wall1:1, wall2:1, wall3:1, off:1 };
+    var pick = (v && typeof v.pick === "string" && ok[v.pick]) ? v.pick : "wall1";
+    return { pick: pick, dark: !!(v && v.dark === true) };
+  }
+  /* 把壁纸配置写成 <html> 的内联变量（--wall-img / --wall-veil），当拍生效（V5）。
+     ★ 只写变量、不碰主题机制：图两态通用，纱的深浅由 --wall-veil-on 两态令牌
+       跟着 data-theme 自己切。
+     ★ 暗色默认关（P0-5）：data-theme="dark" 且 cfg.dark!==true 时无图无纱（V9）。
+     ★ 图也走变量引用（var(--wall-1)），JS 里不复制那几 KB data URI ——
+       同一个值写两处，迟早有一处忘了改。 */
+  function applyWall(cfg){
+    var root = document.documentElement;
+    var dark = root.getAttribute("data-theme") === "dark";
+    var on = cfg.pick !== "off" && !(dark && cfg.dark !== true);
+    root.style.setProperty("--wall-img", on ? "var(--wall-" + cfg.pick.slice(4) + ")" : "none");
+    root.style.setProperty("--wall-veil", on ? "var(--wall-veil-on)" : "none");
+    return on;
   }
   var STATUSES = ["todo","doing","done"];
   var HOLD = "hold";
@@ -1732,9 +1760,43 @@ function aiBind(){
     if (mv) ver.textContent = "v" + mv;
   }
 
+  /* 选壁纸控件（v0.44.0）：4 个色块点（3 壁纸 + 关），无文字。
+     ★ 拨完立刻写、当拍生效 —— 与 nlpOn / wbOn 同一个手势习惯，
+       同一页里两种交互是最容易被骂的那种不一致。
+     ★ 暗色下点壁纸点 = 手动开（P0-5），顺手写 cfg.dark=true；
+       点「关」两态一起关（dark 一起抹掉 —— 留着的话，暗色关完切回亮色再切回来，
+       壁纸又自己冒出来，那是「我的选择被吞了」的反面：「我的关闭被吞了」）。
+     ★ aria-pressed 跟着配置走（paint），状态只有一份真值。 */
+  function bindWall(cfg){
+    var box = document.getElementById("wallSw");
+    if (!box) return;
+    var dots = [].slice.call(box.querySelectorAll(".wall-dot"));
+    var NAMES = { wall1:"冷蓝紫", wall2:"暖橙", wall3:"雾绿" };
+    function paint(){
+      dots.forEach(function(d){
+        d.setAttribute("aria-pressed", d.getAttribute("data-wall") === cfg.pick ? "true" : "false");
+      });
+    }
+    dots.forEach(function(d){
+      d.addEventListener("click", function(){
+        var w = d.getAttribute("data-wall");
+        if (w === cfg.pick) return;
+        cfg.pick = w;
+        var dark = document.documentElement.getAttribute("data-theme") === "dark";
+        if (w === "off") cfg.dark = false;
+        else if (dark) cfg.dark = true;
+        Store.set({ pick: cfg.pick, dark: cfg.dark }, WALLKEY);
+        applyWall(cfg);
+        paint();
+        toast(w === "off" ? "已关掉壁纸" : "已换成「" + NAMES[w] + "」壁纸");
+      });
+    });
+    paint();
+  }
+
   /* ---------- 启动 ---------- */
   Promise.all([Store.get(PKEY), Store.get(), Store.get(PREFKEY), Store.get(WBKEY), Store.get(MCKEY),
-               Store.get(NTKEY), Store.get(LIBKEY), Store.get(IKKEY)]).then(function(r){
+               Store.get(NTKEY), Store.get(LIBKEY), Store.get(IKKEY), Store.get(WALLKEY)]).then(function(r){
     var list = r[0], data = r[1];
     if (Array.isArray(list) && list.length) projects = list;
     if (data && Array.isArray(data.tasks)) {
@@ -3163,6 +3225,18 @@ function aiBind(){
         });
       }
     }
+
+    /* ---------- 壁纸（v0.44.0）----------
+       读（r[8] = WALLKEY 那份）→ 应用 → 绑控件；再挂一个 MutationObserver 盯 data-theme：
+       主题一切（开关 flip 与「跟随系统」两条路都会改这个属性），
+       「暗色默认关」必须当拍生效，不能等刷新。 */
+    var wallCfg = readWall(r[8]);
+    applyWall(wallCfg);
+    bindWall(wallCfg);
+    try {
+      new MutationObserver(function(){ applyWall(wallCfg); })
+        .observe(document.documentElement, { attributes:true, attributeFilter:["data-theme"] });
+    } catch(e){}
 
     bindTabs();
     bindSubTabs();

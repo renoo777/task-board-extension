@@ -957,6 +957,62 @@ body{
 .ab-ver{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink2);
   font-variant-numeric:tabular-nums}
 
+/* ================= v0.44.0：磨砂玻璃（壁纸层 + 纱层 + 选壁纸控件 + 降级）=================
+   ★ 壁纸层 / 纱层用 body 的伪元素承载（**零 DOM 改动**）—— 与材质层同一套老手法：
+     body::before/::after 全站零占用（下手前 grep 过），HTML 结构与断言锚点都不破。
+   ★ fixed + inset:0 + z-index:-1：落在「body 背景（canvas）之上、一切内容之下」，
+     .side / .bd-kpi-c / .bd-card 的 backdrop-filter 糊的就是这两层。
+     pointer-events:none 是硬要求 —— 铺满视口的一层，不设这条全页点不动。
+   ★ 图源与纱都走变量、默认 none：没配置时两层完全透明，
+     body 现有 7 层渐变一字未动、原样兜底（V3 回归断言钉的就是那个串）。
+   ★ 同 z-index 时 ::after 后画：纱永远压在壁纸之上、内容之下。 */
+body::before{
+  content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background-image:var(--wall-img,none);background-size:cover;background-position:center;
+}
+body::after{
+  content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:var(--wall-veil,none);
+}
+
+/* 选壁纸控件：主题开关旁一小排色块点（合并式布局 —— 不开新面板、不进导航，导航 8 项不动）。
+   ★ 胶囊外壳与 .tsw 同一套语汇（--sw-a/--sw-b 渐变 + 同一道影），站在旁边不像两家东西。 */
+.wall-sw{
+  position:fixed;top:16px;right:92px;z-index:50;
+  display:flex;align-items:center;gap:8px;height:30px;padding:0 10px;
+  border:1px solid var(--line2);border-radius:999px;
+  background:linear-gradient(115deg,var(--sw-a),var(--sw-b));
+  box-shadow:var(--sw-shadow),var(--glass-hi);
+}
+.wall-dot{
+  width:16px;height:16px;border-radius:50%;padding:0;margin:0;cursor:pointer;
+  border:1px solid var(--line);-webkit-appearance:none;appearance:none;
+  transition:transform .14s ease,box-shadow .14s ease;
+}
+.wall-dot:hover{transform:scale(1.12)}
+.wall-dot:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* 选中态 = 外面套一圈 accent 环。开关自己就是回执，旁边不摆文字。 */
+.wall-dot[aria-pressed="true"]{box-shadow:0 0 0 2px var(--field-solid),0 0 0 3.5px var(--accent)}
+/* 点的预览就是壁纸本体缩到 16px —— 大虚化之后只剩一团软色，正好当色块 */
+.wall-dot[data-wall="wall1"]{background-image:var(--wall-1);background-size:cover;background-position:center}
+.wall-dot[data-wall="wall2"]{background-image:var(--wall-2);background-size:cover;background-position:center}
+.wall-dot[data-wall="wall3"]{background-image:var(--wall-3);background-size:cover;background-position:center}
+/* 「关」= 中性圆上画一道斜杠，无文字也读作「没有」 */
+.wall-dot.wall-off{
+  background:linear-gradient(135deg,transparent 44%,var(--ink3) 46%,var(--ink3) 54%,transparent 56%),var(--field);
+}
+
+/* ---------- P0-4：backdrop-filter 降级（V8）----------
+   ★ 机制 = 层叠顺序：**追加**在原声明之后，原声明一字不改（上面有变异锚点）。
+     默认（块外）三件套是实底；@supports 命中才升回玻璃。
+     不支持的浏览器把块整个丢掉 → 留下实底；支持的浏览器与之前逐像素一致。
+   ★ theme.css ⑤ 是令牌级回退（顺带保住 popup 的消费方），这里是组件级回退，
+     两道防线各管一段、互不依赖。 */
+.side,.bd-kpi-c,.bd-card{background:var(--field-solid)}
+@supports (backdrop-filter:blur(1px)){
+  .side,.bd-kpi-c,.bd-card{background:var(--glass)}
+}
+
 </style>
 </head>
 <body>
@@ -991,6 +1047,18 @@ body{
     </svg>
   </span>
 </button>
+
+<!-- 壁纸选择（v0.44.0）
+     ★ 一小排色块点、无文字 —— 合并式布局：挂在主题开关旁边（它俩管的都是「这页长什么样」），
+       不开新面板、不进导航（导航 8 项不动）。
+     ★ 第 4 个是「关」：斜杠圆点，读作「没有壁纸」。
+     ★ aria-pressed 由 manage.js 的 bindWall 跟配置同步 —— 状态只有一份真值。 -->
+<div class="wall-sw" id="wallSw" role="group" aria-label="壁纸">
+  <button type="button" class="wall-dot" data-wall="wall1" aria-pressed="true" aria-label="壁纸：冷蓝紫" title="冷蓝紫"></button>
+  <button type="button" class="wall-dot" data-wall="wall2" aria-pressed="false" aria-label="壁纸：暖橙" title="暖橙"></button>
+  <button type="button" class="wall-dot" data-wall="wall3" aria-pressed="false" aria-label="壁纸：雾绿" title="雾绿"></button>
+  <button type="button" class="wall-dot wall-off" data-wall="off" aria-pressed="false" aria-label="关掉壁纸" title="关"></button>
+</div>
 
 <div class="shell">
 
@@ -1723,7 +1791,7 @@ body{
              真正的版本号由 manage.js 从 manifest 读出来覆盖 ——
              写死在 HTML 里等于第二个版本号出处，manifest 一升版这里就开始说谎，
              而且没有任何症状。 -->
-        <div class="ab-ver"><span id="abVer">v0.43.0</span></div>
+        <div class="ab-ver"><span id="abVer">v0.44.0</span></div>
       </div>
     </section>
 

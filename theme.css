@@ -214,6 +214,25 @@
        那不是「颜色变淡」，那是**把这三支从门上摘了**。改 alpha 是纯浓度衰减。
      ★ 暗色**没动**（仍是 .60）：老大点名的是「亮色的背景颜色」，只指了一态。 */
 
+  /* ================= v0.44.0：内置壁纸令牌（磨砂玻璃 P0）=================
+     ★ 三张 SVG mesh-gradient data URI：多色椭圆 + feGaussianBlur 大虚化，
+       全部**低饱和浅色** —— 「不抢状态色语言」是硬约束（PRD P0-1）。
+       选 SVG 不选 PNG 的理由（默认决策 #2）：零新打包文件、零新权限、零存储配额。
+     ★ 合规依据与 --grain 相同（见上面那段）：MV3 只锁 script-src / object-src /
+       worker-src，img-src 与 style-src 默认不设限，CSS 背景图走 data: 允许。
+     ★ 令牌本身**不是**开关：它们只是「图」。开不开、开哪张由 manage.js 按
+       taskboard.wall 配置把 var(--wall-N) 写进 <html> 的 --wall-img 内联变量。
+     ★ 两态齐全：暗色块里原样再写一遍（13f 的门比的是键集覆盖；
+       暗色手动开壁纸时用的也是这三张 —— 图不变，压暗靠 --wall-veil-on 那层纱）。
+     ★ 坐标里的 % 全部写成 %25（data URI 里 % 是转义符，不转整个串就废）。 */
+  --wall-1:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1600' height='1000' viewBox='0 0 1600 1000'%3E%3Cfilter id='b' x='-40%25' y='-40%25' width='180%25' height='180%25'%3E%3CfeGaussianBlur stdDeviation='90'/%3E%3C/filter%3E%3Crect width='1600' height='1000' fill='%23eceef7'/%3E%3Cg filter='url(%23b)'%3E%3Cellipse cx='240' cy='130' rx='540' ry='360' fill='%23b7c6f2'/%3E%3Cellipse cx='1340' cy='170' rx='500' ry='350' fill='%23cfbcf0'/%3E%3Cellipse cx='800' cy='900' rx='660' ry='400' fill='%23bccdf2'/%3E%3Cellipse cx='1520' cy='820' rx='380' ry='300' fill='%23d8d0f4'/%3E%3Cellipse cx='110' cy='780' rx='360' ry='300' fill='%23c4d4f0'/%3E%3C/g%3E%3C/svg%3E");
+  --wall-2:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1600' height='1000' viewBox='0 0 1600 1000'%3E%3Cfilter id='b' x='-40%25' y='-40%25' width='180%25' height='180%25'%3E%3CfeGaussianBlur stdDeviation='90'/%3E%3C/filter%3E%3Crect width='1600' height='1000' fill='%23f7efe7'/%3E%3Cg filter='url(%23b)'%3E%3Cellipse cx='240' cy='130' rx='540' ry='360' fill='%23f2c9a4'/%3E%3Cellipse cx='1340' cy='170' rx='500' ry='350' fill='%23eebd97'/%3E%3Cellipse cx='800' cy='900' rx='660' ry='400' fill='%23f4dab2'/%3E%3Cellipse cx='1520' cy='820' rx='380' ry='300' fill='%23eab39e'/%3E%3Cellipse cx='110' cy='780' rx='360' ry='300' fill='%23f0d6ba'/%3E%3C/g%3E%3C/svg%3E");
+  --wall-3:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1600' height='1000' viewBox='0 0 1600 1000'%3E%3Cfilter id='b' x='-40%25' y='-40%25' width='180%25' height='180%25'%3E%3CfeGaussianBlur stdDeviation='90'/%3E%3C/filter%3E%3Crect width='1600' height='1000' fill='%23ebf1ed'/%3E%3Cg filter='url(%23b)'%3E%3Cellipse cx='240' cy='130' rx='540' ry='360' fill='%23bcdcc6'/%3E%3Cellipse cx='1340' cy='170' rx='500' ry='350' fill='%23a9d1bf'/%3E%3Cellipse cx='800' cy='900' rx='660' ry='400' fill='%23cfe4d1'/%3E%3Cellipse cx='1520' cy='820' rx='380' ry='300' fill='%23b5d8c9'/%3E%3Cellipse cx='110' cy='780' rx='360' ry='300' fill='%23d2e5d5'/%3E%3C/g%3E%3C/svg%3E");
+  /* 对比度纱（强制，不是选项）：壁纸一开就必须压这层，保正文对比度（V6）。
+     ★ 默认**不生效**：body::after 读的是 --wall-veil（fallback none），
+       只有壁纸开着时 manage.js 才把 var(--wall-veil-on) 写过去。 */
+  --wall-veil-on:rgba(246,246,248,.58);
+
   /* 卡片圆角。★ 单独一个键，**不复用 --r-sm**（见开头那段「一处改值连坐」）。
      ★★★★★ v0.21.0：22 → **14px**。老大原话「四个角的圆弧弧度太大了，想减少一点」。
        量出来才看清问题有多大：卡片是 **144×61**，22px 圆角占**卡高的 36%** ——
@@ -329,6 +348,15 @@ html[data-theme="dark"]{
   --glow-1:rgba(38,50,94,.60);
   --glow-2:rgba(51,42,92,.60);
   --glow-3:rgba(46,42,90,.60);
+
+  /* v0.44.0：壁纸三张图与亮色**同值**（低饱和浅色，暗色下靠纱压暗，不换图），
+     纱换深色。两态齐全是 13f 那道门的硬要求，理由见亮色块那段。 */
+  --wall-1:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1600' height='1000' viewBox='0 0 1600 1000'%3E%3Cfilter id='b' x='-40%25' y='-40%25' width='180%25' height='180%25'%3E%3CfeGaussianBlur stdDeviation='90'/%3E%3C/filter%3E%3Crect width='1600' height='1000' fill='%23eceef7'/%3E%3Cg filter='url(%23b)'%3E%3Cellipse cx='240' cy='130' rx='540' ry='360' fill='%23b7c6f2'/%3E%3Cellipse cx='1340' cy='170' rx='500' ry='350' fill='%23cfbcf0'/%3E%3Cellipse cx='800' cy='900' rx='660' ry='400' fill='%23bccdf2'/%3E%3Cellipse cx='1520' cy='820' rx='380' ry='300' fill='%23d8d0f4'/%3E%3Cellipse cx='110' cy='780' rx='360' ry='300' fill='%23c4d4f0'/%3E%3C/g%3E%3C/svg%3E");
+  --wall-2:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1600' height='1000' viewBox='0 0 1600 1000'%3E%3Cfilter id='b' x='-40%25' y='-40%25' width='180%25' height='180%25'%3E%3CfeGaussianBlur stdDeviation='90'/%3E%3C/filter%3E%3Crect width='1600' height='1000' fill='%23f7efe7'/%3E%3Cg filter='url(%23b)'%3E%3Cellipse cx='240' cy='130' rx='540' ry='360' fill='%23f2c9a4'/%3E%3Cellipse cx='1340' cy='170' rx='500' ry='350' fill='%23eebd97'/%3E%3Cellipse cx='800' cy='900' rx='660' ry='400' fill='%23f4dab2'/%3E%3Cellipse cx='1520' cy='820' rx='380' ry='300' fill='%23eab39e'/%3E%3Cellipse cx='110' cy='780' rx='360' ry='300' fill='%23f0d6ba'/%3E%3C/g%3E%3C/svg%3E");
+  --wall-3:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1600' height='1000' viewBox='0 0 1600 1000'%3E%3Cfilter id='b' x='-40%25' y='-40%25' width='180%25' height='180%25'%3E%3CfeGaussianBlur stdDeviation='90'/%3E%3C/filter%3E%3Crect width='1600' height='1000' fill='%23ebf1ed'/%3E%3Cg filter='url(%23b)'%3E%3Cellipse cx='240' cy='130' rx='540' ry='360' fill='%23bcdcc6'/%3E%3Cellipse cx='1340' cy='170' rx='500' ry='350' fill='%23a9d1bf'/%3E%3Cellipse cx='800' cy='900' rx='660' ry='400' fill='%23cfe4d1'/%3E%3Cellipse cx='1520' cy='820' rx='380' ry='300' fill='%23b5d8c9'/%3E%3Cellipse cx='110' cy='780' rx='360' ry='300' fill='%23d2e5d5'/%3E%3C/g%3E%3C/svg%3E");
+  /* 暗色的纱更深（.62）：亮壁纸铺在暗底上，不压重一点正文对比度就保不住。
+     ★ 但它**默认用不上**：暗色默认无壁纸（P0-5），这层只在用户手动开时才被引用。 */
+  --wall-veil-on:rgba(15,17,22,.62);
 
   --r-card:14px;
   --r-col:20px;
@@ -518,6 +546,7 @@ html[data-theme="dark"] .tsw-kn .tsw-kmoon{opacity:1;transform:none}
 @property --toast-chip{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.18)}
 @property --toast-chip-hover{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.3)}
 @property --toast-ink{syntax:'<color>';inherits:true;initial-value:#ffffff}
+@property --wall-veil-on{syntax:'<color>';inherits:true;initial-value:rgba(246,246,248,.58)}
 @property --warn-bg{syntax:'<color>';inherits:true;initial-value:rgba(250,242,232,.62)}
 @property --warn-ink{syntax:'<color>';inherits:true;initial-value:#8f5218}
 @property --warn-line{syntax:'<color>';inherits:true;initial-value:rgba(176,103,42,.24)}
@@ -587,9 +616,26 @@ html[data-theme="dark"] .tsw-kn .tsw-kmoon{opacity:1;transform:none}
     --toast-chip .34s linear,
     --toast-chip-hover .34s linear,
     --toast-ink .34s linear,
+    --wall-veil-on .34s linear,
     --warn-bg .34s linear,
     --warn-ink .34s linear,
     --warn-line .34s linear;
   }
+}
+
+/* ---------- ⑤ v0.44.0：玻璃底令牌的实底回退（P0-4 / V8）----------
+   ★ 机制 = 层叠顺序，**原块一字未动**：上面 :root / dark 块里的 --glass / --lg-card
+     保持原值；这里先整体抬成更实的一档，再在 @supports 里降回原值。
+     不支持 backdrop-filter 的浏览器把 @supports 块整个丢掉 → 留下实底；
+     支持的浏览器后写的块覆盖回去 → 与之前逐像素一致。
+   ★ 只抬这两个「玻璃底」令牌（.side / .bd-kpi-c / .bd-card / .glass / .card 的消费），
+     --field / --card 本来就够实，不动。
+   ★ 值与原块重复是**有意的**：回退机制要求同一份值出现在两处，
+     将来改原块里的 --glass / --lg-card 时必须同步改这里（V8 的门盯着这条）。 */
+:root{ --glass:rgba(255,255,255,.88); --lg-card:rgba(255,255,255,.62); }
+html[data-theme="dark"]{ --glass:rgba(255,255,255,.16); --lg-card:rgba(255,255,255,.14); }
+@supports (backdrop-filter:blur(1px)){
+  :root{ --glass:rgba(255,255,255,.55); --lg-card:rgba(255,255,255,.26); }
+  html[data-theme="dark"]{ --glass:rgba(255,255,255,.055); --lg-card:rgba(255,255,255,.09); }
 }
 
