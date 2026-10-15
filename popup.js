@@ -1738,14 +1738,30 @@
       var full = Inbox.withCred(inboxCfg, sc);
       if (!Inbox.ready(full)) throw new Error("团队派发没配好");
       return Inbox.dispatch(full, t, to).then(function (r) {
-        t.assign = {
-          to: to, at: at,
-          rid: (r && r.recordId) || "",
-          st: "recorded", stAt: Date.now(), why: ""
-        };
+        var rid = (r && r.recordId) || "";
+        /* ★★★ v0.44.1 P0-3：`rid` 为空 = **回读锚点是空的** ⇒ 不许标 `recorded`。
+           原来这里写 `rid: (r && r.recordId) || ""` 配 `st: "recorded"` ——
+           空 rid 也标「已派发」，于是本地以为派出去了（从个人视图消失），
+           而 `applyOutbox` 认不出它（认 `rid`）⇒ **对方进度永远读不回来** ——
+           一次**静默的假成功**，比明着报错更难发现。
+           现在：空 rid 落 `failed` + 说得出原因；活留在个人视图，
+           且 `failed` 仍进「我派的」⇒ 「重派」那颗按钮够得着。 */
+        if (rid) {
+          t.assign = {
+            to: to, at: at, rid: rid,
+            st: "recorded", stAt: Date.now(), why: ""
+          };
+        } else {
+          t.assign = {
+            to: to, at: at, rid: "",
+            st: "failed", stAt: Date.now(),
+            why: "没拿到 recordId（表里可能已建行，但无法回读）"
+          };
+        }
         save().then(function () {
           render();
-          toast("已派给 " + to + "（状态在「我派的」里看）");
+          toast(rid ? ("已派给 " + to + "（状态在「我派的」里看）")
+                    : ("没派出去：" + t.assign.why));
         });
       });
     }).catch(function (e) {
@@ -1941,16 +1957,50 @@
         return;
       }
       var ok = 0, bad = 0, i = 0;
+      /* ★★★ v0.44.1 P0 止血（依据 `_pm_docs/审核-2026-10-13-团队派发链路.md`）：
+         这条路原来的落账形态是 `{to, at}` —— **缺 `rid` 也缺 `st`**，
+         与单条派发（`runDispatch`）的形态不一致。后果三条：
+           · 缺 `rid` ⇒ `applyOutbox` 认不出它 ⇒ **对方进度永远读不回来**；
+           · 缺 `st` ⇒ `assignState` 推断成 `recorded` ⇒ 从个人视图消失，
+             而「我派的」里留一行**永远停在「已派发」的死数字**（比消失更难发现）；
+           · 失败那条只 `bad++`、**什么都不写** ⇒ 连 `assign` 都没有 ⇒
+             不进「我派的」⇒ 「重派」那颗按钮（只画在那一行上）够不着 ⇒ 死任务。
+         ⇒ 本版把这条路的形态**对齐单条派发**：带 rid/st、空 rid 落 failed、
+           失败**逐条落账**。
+         ★ 根因是「落账形态没有单一来源」（两条路两种写法）—— 真正修法是两条路共用
+           一个 `writeAssign()`；那要动老数据迁移，推翻成本「中」，**留下一版**。 */
       function step(){
         if (i >= mine.length) return Promise.resolve();
         var t = mine[i++];
-        return Inbox.dispatch(full, t, who).then(function(){
+        var at = Date.now();
+        /* 先落 `sending`：此时还没交出去（`isGivenAway` 判 false）⇒ 活仍在我手上。 */
+        t.assign = { to: who, at: at, rid: "", st: "sending", stAt: at, why: "" };
+        return Inbox.dispatch(full, t, who).then(function(r){
           /* 本地也记一笔：否则抽屉再打开时「派给」那格还是空的，
-             人会以为没派出去，然后再派一次（于是飞书表里出现两条）。 */
-          t.assign = { to: who, at: Date.now() };
-          ok++;
+             人会以为没派出去，然后再派一次（于是飞书表里出现两条）。
+             ★★ 必须**接住 `Inbox.dispatch` 的返回**：`r.recordId` 是回读唯一锚点
+                （`applyOutbox` 按 `assign.rid` 认行）。原来这里写成 `function(){`
+                —— 返回值整个被扔了 —— 于是「接口给得出来、调用方没接」这个
+                本项目最贵的一类 bug 又犯了一次（见 v0.32.0 的 runDispatch）。 */
+          var rid = (r && r.recordId) || "";
+          if (rid) {
+            t.assign = { to: who, at: at, rid: rid, st: "recorded", stAt: Date.now(), why: "" };
+            ok++;
+          } else {
+            /* ★ 空 `rid` 不标 `recorded`（与 P0-3 同族）：那是一次假成功。 */
+            t.assign = { to: who, at: at, rid: "", st: "failed", stAt: Date.now(),
+                         why: "没拿到 recordId（表里可能已建行，但无法回读）" };
+            bad++;
+          }
           return step();
-        }, function(){ bad++; return step(); });
+        }, function(e){
+          /* ★ 失败也**逐条落账**（原来只 `bad++`）：状态与原因留在本地，
+             这一条因此仍进「我派的」⇒ 「重派」够得着。 */
+          t.assign = { to: who, at: at, rid: "", st: "failed", stAt: Date.now(),
+                       why: (typeof Inbox !== "undefined") ? Inbox.failText(e) : "未知原因" };
+          bad++;
+          return step();
+        });
       }
       return step().then(function(){ return save(); }).then(function(){
         render();
@@ -3029,7 +3079,13 @@
       var curTo = (t.assign && t.assign.to) || "";
       if (wantTo !== curTo) {
         if (wantTo) {
-          t.assign = { to: wantTo, at: Date.now() };
+          /* ★★ v0.44.1：这里原来写 `{ to: wantTo, at: Date.now() }`（缺 rid/st）——
+             正常情况下它**同一拍**就被 `runDispatch` 的 `sending` 形态盖掉，所以过去
+             没暴雷；但万一 `Inbox`/`Sync` 没加载，`runDispatch` 首行 return，
+             这个残缺形态就**留在盘上**了（活从个人视图消失、进度永久失联）。
+             ⇒ 一律写全形态：不再有「一时半会儿来不及写全」的借口。
+             （判据 `_validate.py` 现在全项目扫：每个 `t.assign` 对象字面量都必须带 rid/st。） */
+          t.assign = { to: wantTo, at: Date.now(), rid: "", st: "sending", stAt: Date.now(), why: "" };
           runDispatch(t, wantTo);    /* fire and forget，理由见 runDispatch */
         } else {
           delete t.assign;

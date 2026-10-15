@@ -1753,6 +1753,16 @@ body::after{
                将来只改这一处 —— _validate.py 有一条门钉着「GitHub 外链只有一条」。 -->
           <a class="ab-link" id="abGh" href="https://github.com/renoo777"
              target="_blank" rel="noreferrer noopener">GitHub</a>
+          <span class="ab-sep" aria-hidden="true">·</span>
+          <!-- ★ v0.44.1：意见反馈入口（飞书收集表单）。跟 GitHub **并排放在作者行**，
+               不新开一块 —— 一是老大定的规矩「新功能要嵌进已有区块，不单开面板」，
+               二是关于页有一道门钉着「正好三块」（`_validate.py`：`blk == 3`），
+               为一条链接去改那道门是自找麻烦。
+               ★ `target="_blank"` 在这里管用：本页是 `chrome.tabs.create` 打开的
+               **整页**（不是 popup），外链照常开新标签。 -->
+          <a class="ab-link" id="abFb"
+             href="https://qiangqiangkeji.feishu.cn/share/base/webpage/shrcnRzY8gOqnBpib9uQXcRwLhb"
+             target="_blank" rel="noreferrer noopener">意见反馈</a>
         </div>
       </div>
 
@@ -1791,7 +1801,7 @@ body::after{
              真正的版本号由 manage.js 从 manifest 读出来覆盖 ——
              写死在 HTML 里等于第二个版本号出处，manifest 一升版这里就开始说谎，
              而且没有任何症状。 -->
-        <div class="ab-ver"><span id="abVer">v0.44.0</span></div>
+        <div class="ab-ver"><span id="abVer">v0.44.1</span></div>
       </div>
     </section>
 
