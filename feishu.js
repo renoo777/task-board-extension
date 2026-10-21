@@ -821,6 +821,37 @@ var Feishu = (function () {
     return call(cfg, "POST", url, { member_type: mt, member_id: mid });
   }
 
+  /* id 缩成 前 8 + 后 4（v0.45.1：从 inbox 提上来，两条建表路共用一份）。
+     ★ 提示语里要写「转给了谁」，但完整 open_id 有 40 来个字符，会把
+       真正有用的那句话挤没。 */
+  function shortId(v) {
+    var s = String(v == null ? "" : v).trim();
+    return s.length > 14 ? (s.slice(0, 8) + "\u2026" + s.slice(-4)) : s;
+  }
+
+  /* 转移之后**回读**表上的所有者，判断「归属真的成了吗」（v0.45.1）。
+     ★★★ 为什么非回读：`transfer_owner` 回 code=0 只说明这次请求被接受了，
+       与「所有者真的变成了这个人」是两件事 —— v0.34.0 在这里报过一次假成功
+       （铁律 523）。而「归属」这件事，用户唯一的验收方式就是去飞书看。
+     ★ 两条建表路（团队「一键生成」/ 飞书同步「新建一张」）**共用这一条判据**：
+       抄两份的话迟早一份改了另一份没改（v0.43.0 G11 / G12 的原教训）。
+     ★ 邮箱档不比对 id：回读拿到的**永远是 id**，邮箱换 id 要走通讯录权限（没有），
+       所以只验「读到了、而且不是应用自己（`cli_`）」。
+     ★ 读失败**不当成功**：返回 ok=false 并带上原因，调用方照实说「验不了」。 */
+  function ownerIs(cfg, appToken, tgt) {
+    return docOwner(cfg, appToken).then(function (own) {
+      var got = String((own && own.id) || "").trim();
+      var want = String((tgt && tgt.mid) || "").trim();
+      var isApp = /^cli_/.test(got);
+      if (tgt && tgt.mt === "email") return { ok: !!got && !isApp, got: got };
+      return { ok: !!got && !!want && got === want, got: got };
+    }, function (e) {
+      /* 失败时用 `detail` 而不是 `why`：`feishu.js` 这面的失败字段约定是
+         `detail / steps / error`（`_validate.py` 的按面钉字段门会查）。 */
+      return { ok: false, got: "", detail: (e && e.message) || "读不出来" };
+    });
+  }
+
   /* ---------- 认人（v0.36.0）----------
      这两条是「转移归属」的前置：先得知道**本人是谁**。
      v0.34.0 只留了「设置页填邮箱」「组员表标本人」两条路，两条都空时整步静默跳过 ——
@@ -1080,6 +1111,49 @@ var Feishu = (function () {
           "不影响扩展读写，只是你在飞书网页里打开它只能看", true);
       });
     }).then(function () {
+      /* ★★★ v0.45.1：把这张表的**归属**转给本人 —— 应用（tenant_access_token）
+         建的云文档**归应用自己**，人在飞书里只是「被邀请的协作者」：
+         看不到管理入口、改不了权限、也移不走它。
+         ★ 为什么 v0.34.0 没覆盖到这里：那一版只给**团队一键生成**那条路加了转归属，
+         飞书同步的「新建一张」走的是这个函数，而它的注释当时写着
+         「表归应用自己，不缺权限」—— **「扩展读写不缺权限」与「归属该是应用」
+         是两件事**，老大这次报的就是后者。
+         ★ 顺序在 `setLinkEditable` **之后**：先把表建完、列补全、分享设好，
+           最后才动归属 —— 前面任何一步挂了都不该把一张半截的表转出去。
+         ★ 可选步骤：转不成不影响建表本身（扩展读写不依赖归属），
+           但**必须说出来**，不能静默 —— 否则症状就是「建好了，但权限不是我」。 */
+      var tgt = opts.owner;
+      if (!tgt || !String(tgt.mid || "").trim()) {
+        rec("把这张表转成你的", false,
+          "这次没认出你是谁：在团队段填「我的飞书邮箱」，或者在「我是谁」下拉里选一下，" +
+          "然后**再点一次这个按钮**（建表本身已经成功，不用重建）", true);
+        return null;
+      }
+      return transferOwner(cfg, out.appToken, tgt.mt, tgt.mid).then(function () {
+        return ownerIs(cfg, out.appToken, tgt).then(function (v) {
+          if (v.ok) {
+            rec("这张表现在归你了", true,
+              (tgt.src === "邮箱" ? "" : "从" + tgt.src + "认出了你") +
+              (v.got ? "（所有者 " + shortId(v.got) + "）" : ""), true);
+            return null;
+          }
+          /* 转出去了，但表上的所有者不是他 —— **真失败**，而且是最难自己发现的那种
+             （接口明明回了成功）。把回读到的真实所有者报出来，别让人对着「成功」干瞪眼。 */
+          rec("把这张表转成你的", false,
+            "转给了 " + shortId(tgt.mid) + "，但表上的所有者是 " +
+            (v.got ? shortId(v.got) : (v.detail || "读不出来")), true);
+          return null;
+        });
+      }, function (e) {
+        var code = e && e.code;
+        var msg = (e && e.message) || "未知原因";
+        /* 1063002 = 调用身份不是这张表的所有者。对「刚建出来的表」不该发生；
+           真发生了就如实说 —— 别把它当成成功。 */
+        rec("把这张表转成你的", false,
+          (code === 1063002 ? "飞书说调用身份不是这张表的所有者：" : "") + msg, true);
+        return null;
+      });
+    }).then(function () {
       out.ok = true;
       return out;
     }, function (e) {
@@ -1128,6 +1202,8 @@ var Feishu = (function () {
     dropTable: dropTable,
     setLinkEditable: setLinkEditable,
     transferOwner: transferOwner,
+    ownerIs: ownerIs,
+    shortId: shortId,
     appOwner: appOwner,
     docOwner: docOwner,
     memberTypeOf: memberTypeOf,

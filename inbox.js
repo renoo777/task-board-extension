@@ -606,6 +606,16 @@
       meSrc: trim(v.meSrc),
       meSuspect: v.meSuspect === true,
       meWhy: trim(v.meWhy),
+      /* ★★★ v0.45.0：**本机选定的身份**（open_id）。
+         为什么必须有它：`resolveMe` 原来的唯一来源是 `Feishu.appOwner` ——
+         那是**应用登记所有者**，而应用凭据是全组共用的 ⇒ 同一个 appId、同一个 owner
+         ⇒ **每台机器认出来都是同一个人**（老大）。同事那边于是收件箱、我派的、
+         派发人三处同时错，而且一个字都不报。
+         ★ 只存 `storage.local`，**绝不写进共享表**：「本人」是每个客户端私有的判断，
+           不是全组共有的事实（v0.41.0 已经为这条否决过一次）。
+         ★★ 必须加进这个白名单。v0.38.0 的 `meId` / `meSrc` / `meWhy` 就是
+           「写得进去、读不回来」，症状看起来像「功能没做」（见上面那段）。 */
+      selfId: trim(v.selfId),
       notifyOn: v.notifyOn === true,
       speakOn: v.speakOn === true
     };
@@ -797,8 +807,36 @@
      ★ 放在顶层、只有这一份：它原来在 `generate()` 里是局部的，而认人的提示语
        现在有多处要用 —— 抄成两份的话，漂移的症状是「设置页缩了、提示里没缩」。 */
   function shortId(v) {
-    var s = trim(v);
-    return s.length > 14 ? (s.slice(0, 8) + "\u2026" + s.slice(-4)) : s;
+    /* ★ v0.45.1：实现搬到 `Feishu.shortId` —— 飞书同步的「新建一张」也要缩 id。
+       两份实现漂移的症状是「设置页缩了、同步页没缩」。 */
+    return Feishu.shortId(v);
+  }
+
+  /* 「转归属该转给谁」——**只有这一份**（v0.45.1 从 `generate()` 的局部函数提上来）。
+     ★★★ 为什么必须提上来：v0.34.0 只给「团队一键生成」加了转归属，而飞书同步的
+       「新建一张」走 `Feishu.provision`，那条路上一个认人的代码都没有 ——
+       同一个动作两条路，一条做了、一条没做，用户看到的差别就是「这张表是我的，
+       那张表是应用的」。★ 与 v0.37.0 把 `resolveMe` 提上来是**同一条教训**：
+       同一件事实（我是谁）在两处各算一遍，迟早漂开。
+     a) 配置里的「我的飞书邮箱」——**明确指认**，建表那一刻就有，一次到位；
+     b) 没有邮箱才走 `resolveMe`（本机选择 / 组员表 / 应用所有者）—— 推断。
+     ★ 返回 `{mt, mid, src}` 或 null（认不出）。认不出**不抛**：调用方把它当
+       「这一步没做成」如实说，而不是让整件事失败。 */
+  function ownerTargetOf(cfg, appToken, peopleTableId) {
+    var mail = trim(cfg && cfg.ownerMail);
+    if (mail) return Promise.resolve({ mt: "email", mid: mail, src: "邮箱" });
+    /* ★ 必须能带进**刚建出来的**组员表 id：`cfg.peopleTableId` 在首次生成那一步
+       还是空值，拿它去读会读成「还没配组员表」。 */
+    var c = {};
+    Object.keys(cfg || {}).forEach(function (k) { c[k] = cfg[k]; });
+    if (trim(appToken)) c.baseToken = trim(appToken);
+    if (trim(peopleTableId)) c.peopleTableId = trim(peopleTableId);
+    return resolveMe(c).then(function (r) {
+      if (!r || !trim(r.meId)) return null;
+      /* ★ member_type 按 id 前缀判，不写死 "openid"：组员表里填的可能是裸 user_id，
+         写死的话飞书会回「成员不存在」，而 id 明明是对的 —— 人会往权限上想。 */
+      return { mt: Feishu.memberTypeOf(r.meId), mid: r.meId, src: r.src || "应用" };
+    }, function () { return null; });
   }
 
   /* ★★★ v0.38.0：派发人**写进团队表**的那个值 —— 「我是谁」的唯一口径。
@@ -899,6 +937,31 @@
         };
         Object.keys(extra || {}).forEach(function (k) { o[k] = extra[k]; });
         return o;
+      }
+      /* ★★★ v0.45.0：**第 0 级 —— 本机选择**，排在一切推断之前。
+         为什么必须排最前：下面 b/c 两级唯一的输入是 `Feishu.appOwner(cfg)`，
+         而那是**应用登记所有者**；应用凭据全组共用 ⇒ 同一个 appId ⇒ 同一个 owner
+         ⇒ 同事机器上永远认成老大。**推断级在结构上不可能因人而异。**
+         ⇒ 只有「这台机器自己说了算」能解决，而且它必须是**最高优先级** ——
+           放到推断级后面等于没加（推断级永远有答案，永远不会走到这里）。
+
+         ★ 只认**有 uid 的命中**：open_id 才是稳定主键，姓名是可变的显示层。
+         ★★ 没命中时**不许退回推断级**：那会静默变成"老大"，比认不出更糟 ——
+           认不出至少看得见（`why` 会说出来）。这里用 selfId 本身当身份，
+           `whoOf` 会退成写 open_id，派发照常可用。 */
+      var selfId = trim(cfg && cfg.selfId);
+      if (selfId) {
+        var picked = null;
+        for (var k0 = 0; k0 < rows.length; k0++) {
+          if (trim(rows[k0].uid) && trim(rows[k0].uid) === selfId) { picked = rows[k0]; break; }
+        }
+        if (picked && trim(picked.name)) {
+          return pack(meFrom(picked, selfId, "本机选择"));
+        }
+        return pack({
+          meId: selfId, me: picked ? trim(picked.name) : "", src: "本机选择",
+          why: picked ? "" : "本机选的那个账号已经不在「组员」表里了，去设置页重选一次"
+        });
       }
       /* ★★★ v0.41.0：原 a 级（「身份」=「本人」那行）在此处 —— **已删**。
          它读的列不存在了。删掉它不损失任何东西（论证见下），而它的**第二个用处**
@@ -1535,21 +1598,10 @@
          ★ 「我的飞书邮箱」只在这里有：`transfer_owner` 接受邮箱，而派发那条路
            要的是**名字**，邮箱在那儿没用 —— 所以它不进 resolveMe。 */
       function ownerTarget(appToken) {
-        var mail = trim(cfg && cfg.ownerMail);
-        if (mail) return Promise.resolve({ mt: "email", mid: mail, src: "邮箱" });
-        /* ★ 必须把**刚建出来的**组员表 id 带进去：`cfg.peopleTableId` 在这一步
-           还是它进来时的值（首次生成时是空的），拿它去读会读成「还没配组员表」。 */
-        var c = {};
-        Object.keys(cfg || {}).forEach(function (k) { c[k] = cfg[k]; });
-        c.baseToken = trim(appToken) || c.baseToken;
-        if (out.peopleTableId) c.peopleTableId = out.peopleTableId;
-        return resolveMe(c).then(function (r) {
-          if (!r || !trim(r.meId)) return null;
-          /* ★ member_type 按 id 前缀判，不写死 "openid"：老大在组员表里
-             填的可能是裸 user_id，写死的话飞书会回「成员不存在」，
-             而 id 明明是对的 —— 人会往权限上想。 */
-          return { mt: Feishu.memberTypeOf(r.meId), mid: r.meId, src: r.src || "应用" };
-        }, function () { return null; });
+        /* ★ v0.45.1：实现搬到顶层 `ownerTargetOf` —— 飞书同步的「新建一张」那条路
+           也要同一份认人规则（邮箱 → resolveMe）。这里只负责把**刚建出来的**
+           组员表 id 带进去：`cfg.peopleTableId` 在这一步还是它进来时的值。 */
+        return ownerTargetOf(cfg, appToken, out.peopleTableId);
       }
 
       /* 转移之后**回读**表上的所有者，确认真的转成了这个人。
@@ -1561,16 +1613,9 @@
            所以邮箱那条只验「读到了、而且不是应用自己」。
          ★ 回读失败**不当失败**：它只说明「验不了」，把原因带出去让设置页照实说。 */
       function verifyOwner(appToken, tgt) {
-        return Feishu.docOwner(cfg, appToken).then(function (own) {
-          var got = trim(own && own.id);
-          var want = trim(tgt && tgt.mid);
-          /* 应用自己的 id 是 cli_… —— 回读到它 = 归属**根本没转出去**，真失败。 */
-          var isApp = /^cli_/.test(got);
-          if (tgt && tgt.mt === "email") return { ok: !!got && !isApp, got: got };
-          return { ok: !!got && !!want && got === want, got: got };
-        }, function (e) {
-          return { ok: false, got: "", why: (e && e.message) || "读不出来" };
-        });
+        /* ★ v0.45.1：判据搬到 `Feishu.ownerIs` —— 「新建一张」那条路也要回读验证。
+           同一套判断（cli_ 前缀 / 邮箱档不比对 id）只有这一份。 */
+        return Feishu.ownerIs(cfg, appToken, tgt);
       }
 
       /* 所有者 id 缩成 前 8 + 后 4 —— 实现搬到了顶层 `shortId`（v0.37.0）。
@@ -1667,7 +1712,7 @@
                  那一种（接口明明回了成功）。把真实所有者报出来，别让人对着「成功」干瞪眼。 */
               out.ownerDone = false;
               out.ownerWhy = "转给了 " + shortId(tgt.mid) + "，但表上的所有者是 " +
-                (v.got ? shortId(v.got) : (v.why || "读不出来"));
+                (v.got ? shortId(v.got) : (v.detail || "读不出来"));
               rec("把这张表转成你的", false, out.ownerWhy, true);
               return null;
             });
@@ -1825,6 +1870,7 @@
     applyPeople: applyPeople,
     /* ★ v0.37.0 认人：派发 / 转归属 / 设置页三条路共用这一个实现 */
     resolveMe: resolveMe,
+    ownerTargetOf: ownerTargetOf,
     looksPlaceholder: looksPlaceholder,
     toTeamFields: toTeamFields,
     fromTeamFields: fromTeamFields,

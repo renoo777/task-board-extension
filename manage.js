@@ -1066,9 +1066,13 @@
       });
     });
 
-    /* 一键建表：建 base → 建数据表与字段 → 清平台默认表 → 设成组织内可编辑 → 填回配置并同步
-       ★ 只要 App ID / App Secret。建表不需要邮箱，建完之后的读写也不需要 ——
-         表归应用自己，不缺权限。 */
+    /* 一键建表：建 base → 建数据表与字段 → 清平台默认表 → 设成组织内可编辑
+       → **把归属转给本人** → 填回配置并同步
+       ★★★ v0.45.1：这里原来写的是「表归应用自己，不缺权限」。那句话只说对了
+         前半截 —— **「扩展读写不缺权限」与「归属该是应用」是两件事**。
+         应用建的云文档归应用，用户在飞书里只是「被邀请的协作者」：
+         看不到管理入口、改不了权限、也移不走它。
+         现在与团队「一键生成」共用同一份认人规则（邮箱 → resolveMe）。 */
     if (fsEls.fsCreate) fsEls.fsCreate.addEventListener("click", function(){
       var cfg = fsCollect();
       if (!cfg.appId || !cfg.appSecret) { toast("先填 App ID 和 App Secret"); fsEls.fsAppId.focus(); return; }
@@ -1078,7 +1082,23 @@
       fsEls.fsStat.textContent = "正在建多维表格，要跟飞书来回几次，稍等…";
       fsEls.fsReport.innerHTML = "";
 
-      Feishu.provision({ appId:cfg.appId, appSecret:cfg.appSecret }).then(function(res){
+      /* 认人：邮箱优先，没填就走 resolveMe（本机选择 / 组员表 / 应用所有者，纯只读）。
+         认不出**不拦着建表** —— 传 null 进去，让 provision 把这一步如实标成没做成。 */
+      var ownerP = Inbox.loadCfg().then(function (tc) {
+        tc = tc || {};
+        /* ★★★ v0.45.1：凭据以「飞书同步」这一格为准。
+           团队段**不存** App ID / AppSecret —— 它一直是运行时从同步配置借的
+           （见 `withSync()` / `Inbox.withCred`）。不合并的话，首次配置时
+           `appOwner` 根本没凭据换 token ⇒ 认不出人 ⇒ 表建好了、归属还是应用的。
+           那正是这次要修的症状，而它只在「第一次用」时出现 —— 最难自查的一种。 */
+        tc.appId = cfg.appId;
+        tc.appSecret = cfg.appSecret;
+        return Inbox.ownerTargetOf(tc, "", tc.peopleTableId);
+      }, function () { return null; });
+
+      ownerP.then(function (tgt) {
+        return Feishu.provision({ appId:cfg.appId, appSecret:cfg.appSecret }, { owner: tgt });
+      }).then(function(res){
         delete fsEls.fsStat.dataset.busy;
         renderTestReport({ steps: res.steps });
         if (!res.tableId) { fsEls.fsStat.textContent = "建表没成：" + (res.error || "未知原因"); return; }
@@ -1940,6 +1960,12 @@ function aiBind(){
       var tryHint = document.getElementById("tmTryHint");
       var nowHint = document.getElementById("tmNowHint");
       var whoEl = document.getElementById("tmWho");
+      /* ★★★ v0.45.0：本机身份选择器。认人链原来的唯一来源是「应用登记所有者」，
+         而应用凭据全组共用 ⇒ 同事机器上永远认成同一个人。这个下拉是那条链上
+         **唯一**能让「我」因人而异的地方。 */
+      var selfEl = document.getElementById("tmSelf");
+      /* 上一次读到的组员行（只缓存有 uid 的）。空数组 = 还没读到 / 读失败。 */
+      var selfRows = [];
       var makeHint = document.getElementById("tmMakeHint");
       var arcEl = document.getElementById("tmArc");
 
@@ -2111,6 +2137,52 @@ function aiBind(){
            用「用这张」切了表之后必须重绘，否则竖条还留在旧那行上。 */
         paintArc();
         paintWho();
+        /* ★ v0.45.0：下拉也要跟着重绘 —— `tmKeep` 落盘后会走 `paint()`，
+           漏了这一行就会出现「选完人、下拉跳回自动」（异步读回来的东西必须补绘）。 */
+        paintSelf();
+      }
+
+      /* 本机身份下拉（v0.45.0）。
+         ★ 选项只放**有 uid 的行**：open_id 是稳定主键，姓名只是显示层 ——
+           按名字认人会在重名/改名时静默认错，而且错得没有任何提示。
+         ★ 没读到名单（selfRows 空）时把下拉藏起来：摆一个只有「自动」的空壳
+           会让人以为「没有别人可选」，而真因只是还没连上。
+         ★ 选中值单独补一条「已不在名单」：否则用户选的人被移出组员表之后，
+           下拉会显示成第一项（自动），看起来像「我的选择被吃了」。 */
+      function paintSelf(){
+        if (!selfEl) return;
+        var cur = String(cfg.selfId || "").trim();
+        while (selfEl.firstChild) selfEl.removeChild(selfEl.firstChild);
+        var o0 = document.createElement("option");
+        o0.value = "";
+        o0.textContent = "自动（应用所有者）";
+        selfEl.appendChild(o0);
+        var has = false;
+        selfRows.forEach(function(x){
+          var uid = String(x.uid || "").trim();
+          if (!uid) return;
+          var o = document.createElement("option");
+          o.value = uid;
+          o.textContent = String(x.name || "").trim() || (uid.slice(0, 12) + "…");
+          if (uid === cur) { o.selected = true; has = true; }
+          selfEl.appendChild(o);
+        });
+        if (cur && !has) {
+          var ox = document.createElement("option");
+          ox.value = cur;
+          ox.textContent = "（已不在组员表）" + cur.slice(0, 12) + "…";
+          ox.selected = true;
+          selfEl.appendChild(ox);
+        }
+        selfEl.hidden = !selfRows.length;
+      }
+
+      /* 把读回来的组员行灌进下拉。`rows` 为空表示「这次没读到」—— **不动旧缓存**：
+         一次网络抖动不该把下拉清空（跟 `applyPeople` 空结果不覆盖同一个理由）。 */
+      function feedSelf(rows){
+        if (!rows || !rows.length) { paintSelf(); return; }
+        selfRows = rows.filter(function(x){ return x && String(x.uid || "").trim(); });
+        paintSelf();
       }
 
       /* 「我是谁」这一行（v0.37.0）。
@@ -2167,6 +2239,17 @@ function aiBind(){
       if (baseEl) baseEl.addEventListener("change", function(){ tmKeep({ baseToken: baseEl.value }); });
       if (tblEl) tblEl.addEventListener("change", function(){ tmKeep({ tableId: tblEl.value }); });
       if (mailEl) mailEl.addEventListener("change", function(){ tmKeep({ ownerMail: mailEl.value }); });
+      /* ★★★ v0.45.0：选「我是谁」—— 整条认人链上唯一**因人而异**的一格。
+         存 `storage.local`，**不写共享表**（v0.41.0 的铁律：「本人」是每个客户端
+         私有的判断，不是全组共有的事实）。 */
+      if (selfEl) selfEl.addEventListener("change", function(){
+        var v = String(selfEl.value || "").trim();
+        tmKeep({ selfId: v }).then(function(){
+          paintWho();
+          paintSelf();
+          toast(v ? "以后这台机器认成这一位" : "已改回自动（应用所有者）");
+        });
+      });
 
       if (linkEl) linkEl.addEventListener("change", function(){
         var p = parseBaseLink(linkEl.value);
@@ -2219,6 +2302,12 @@ function aiBind(){
                  ★ 结果落盘 + 重绘：不落盘的话下次打开又得重认；
                    不重绘的话屏幕上还是旧的（异步读回来的东西必须补绘一次）。 */
               return Inbox.resolveMe(full).then(function (r) {
+                /* ★ v0.45.0：把名单灌进「我是谁」下拉 —— 这是页面上唯一拿得到
+                   **带 uid 的行**的地方（`paintWho` 只有配置、没有名单）。
+                   ★ 也必须在这里：下面 `tmKeep(patch)` 会把 `meId` 写成
+                     `r.meId`，而 `r` 已经是「本机选择」优先之后的结果 ——
+                     不灌名单的话，用户第一次进来根本无从选起。 */
+                feedSelf(r && r.rows);
                 /* ★★★ v0.38.0：判据从「有没有**名字**」改成「有没有**身份**」。
                    `whoOf` 的口径是 真名 → open_id → 占位名，而**名字恰恰是
                    飞书唯一不肯给的那一格**（字段级管控）—— open_id 零配置就有。
@@ -2345,6 +2434,21 @@ function aiBind(){
       });
 
       paint();
+      /* ★★ v0.45.0：打开设置页时把名单拉一次，好让「我是谁」下拉**一进来就能选**。
+         为什么不能只靠「测试连接」：同事装完扩展根本不知道该去点那个按钮，
+         而认错人的症状是静默的 —— 他只会觉得"派给我的活一条都没有"。
+         ★ 只读安全：`resolveMe` 从 v0.41.0 起**一个写请求都不发**。
+         ★ 失败不出声：页面刚打开就弹网络错误是噪音；`#tmWho` 那行显示上一次结果，
+           要真因就按「测试连接」。
+         ★ 只在配置齐了才发：缺凭据 / 表 ID 时注定失败，白发一次没有意义。 */
+      if (cfg.on && cfg.peopleTableId) {
+        withSync().then(function (full) {
+          if (!full) return null;
+          return Inbox.resolveMe(full).then(function (r) {
+            feedSelf(r && r.rows);
+          });
+        }).catch(function () { return null; });
+      }
     })();
 
     /* ---------- 吉祥物（v0.24.0）

@@ -1331,6 +1331,12 @@ body::after{
                一行字把它摆出来：认的是谁、从哪认的、可不可信。 -->
           <div class="row wrap wact">
             <span class="sub" id="tmWho"></span>
+            <!-- ★ v0.45.0：本机身份选择器。认人的省缺来源是「应用登记所有者」，
+                 而应用凭据全组共用 ⇒ 同事机器上永远认成同一个人（老大）。
+                 这一格是整条认人链上唯一**因人而异**的地方；选项只放有
+                 open_id 的行（姓名只是显示层，重名/改名会静默认错）。
+                 ★ 注释里故意不写那个 id 和 URL，免得判据被注释喂饱。 -->
+            <select id="tmSelf" hidden></select>
           </div>
         </div>
 
@@ -1801,7 +1807,7 @@ body::after{
              真正的版本号由 manage.js 从 manifest 读出来覆盖 ——
              写死在 HTML 里等于第二个版本号出处，manifest 一升版这里就开始说谎，
              而且没有任何症状。 -->
-        <div class="ab-ver"><span id="abVer">v0.44.1</span></div>
+        <div class="ab-ver"><span id="abVer">v0.45.1</span></div>
       </div>
     </section>
 
